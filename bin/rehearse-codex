@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Executor contract and review regressions. Fake Codex only: no model or network calls.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec node rehearsals/codex.mjs

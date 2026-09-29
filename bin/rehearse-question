@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# A question, rehearsed end to end with the fake executor: zero model calls, a throwaway
+# pursuit, every path the answer adds walked once and asserted on the record it leaves.
+#
+#   bin/rehearse-question       prints one line per assertion, exits non-zero if any fails
+#
+# The defect this is about, from wiki/log/2026-09-05-questions-and-the-disproof-machine.md: an
+# agent told to prove X that proved not-X had no box for it. The attempt was recorded failed,
+# or walled if it happened to invent new names, the item stayed active, and the next attempt
+# paid to refute it again. Twelve items on the lean-eval board, twenty attempts, $69.73, every
+# refutation correct and kernel-checked, every one filed as a cost. A question is an item whose
+# check accepts either direction, and the handback's `answer` says which way it went.
+#
+# What is rehearsed:
+#   1. a done attempt answering false is recorded on the attempt and on the item
+#   2. a done attempt answering true is recorded the same way
+#   3. an item that needs a refuted one is never launched
+#   4. and the run says why, naming the refuted need rather than printing a bare `waiting`
+#   5. an item that needs a true-answered one launches and lands, so a true answer still unblocks
+#   6. the refutation merged to the trunk: a disproof is finished work, not a wall
+#   7. an answer that is not true or false is a note, not an answer, and the item carries none
+#   8. an answer beside a wall is recorded on the attempt and not applied to the item
+#   9. the summary counts the refutations and lists each one
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-question.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+[ -n "${KEEP:-}" ] && echo "  workspace $T"
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G="$T/question.json"
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {
+  "graph": "rehearse-question", "concurrency": 2, "max_attempts": 1,
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4930},
+  "work": [
+    # Settled false. What needs it must never launch.
+    {"id": "w-q-false", "what": "Settle Q1: prove it or prove its negation", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "done", "answer": False, "usd": 1}}},
+    {"id": "w-on-false", "what": "Needs Q1 true", "check": "true", "needs": ["w-q-false"],
+     "params": {"fake": {"prove": "done", "usd": 1}}},
+    # Settled true. What needs it launches and lands: the control.
+    {"id": "w-q-true", "what": "Settle Q2: prove it or prove its negation", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "done", "answer": True, "usd": 1}}},
+    {"id": "w-on-true", "what": "Needs Q2 true", "check": "true", "needs": ["w-q-true"],
+     "params": {"fake": {"prove": "done", "usd": 1}}},
+    # "maybe" is not an answer.
+    {"id": "w-q-maybe", "what": "Settle Q3", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "done", "answer": "maybe", "usd": 1}}},
+    # An answer beside a wall: the attempt did not finish, so it settled nothing.
+    {"id": "w-q-walled", "what": "Settle Q4", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "wall", "answer": False, "usd": 1,
+                "wall_report": {"wall": "the counterexample needs Foo, which the workspace lacks",
+                                "work": [{"id": "w-foo", "what": "add Foo"}]}}}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(g, open(f"{T}/question.json", "w"), indent=2)
+PY
+
+echo "== the run"
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" > "$T/run.log" 2>&1
+echo "  exit $?; $(grep -c ' start ' "$T/run.log") launches"
+
+assert "1. answered false: on the attempt, and on the item with who and when" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-q-false'][0]
+w=[x for x in g['work'] if x['id']=='w-q-false'][0]
+assert a['state']=='done', a['state']
+assert a['result'].get('answer') is False, a['result']
+assert w.get('answer') is False, w
+assert w.get('answered_by')==a['id'], w
+assert w.get('answered_at'), w"
+assert "2. answered true: recorded the same way" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-q-true'][0]
+w=[x for x in g['work'] if x['id']=='w-q-true'][0]
+assert a['state']=='done' and a['result'].get('answer') is True, a
+assert w.get('answer') is True and w.get('answered_by')==a['id'], w"
+assert "3. the item that needed the refuted one was never launched" "
+import json;g=json.load(open('$G'))
+assert [x for x in g['attempts'] if x['of']=='w-on-false']==[], 'launched'"
+assert "4. and the run named the refuted need instead of printing a bare waiting" "
+t=open('$T/run.log').read()
+line=[l for l in t.splitlines() if 'w-on-false' in l and 'waiting' in l]
+assert line, t[-1200:]
+assert 'w-q-false (refuted)' in line[0], line[0]"
+assert "5. the item that needed the true-answered one launched and landed" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-on-true']
+assert len(a)==1 and a[0]['state']=='done', a"
+assert "6. the refutation merged to the trunk: finished work, not a wall" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-q-false'][0]
+assert a['result'].get('integrated'), a['result']"
+assert "7. maybe is not an answer: a note on the attempt, nothing on the item" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-q-maybe'][0]
+w=[x for x in g['work'] if x['id']=='w-q-maybe'][0]
+assert a['state']=='done' and 'answer' not in a['result'], a['result']
+assert 'answer' not in w, w
+assert any('not true or false' in n for n in a['result'].get('notes',[])), a['result'].get('notes')"
+assert "8. an answer beside a wall is recorded on the attempt and not applied to the item" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-q-walled'][0]
+w=[x for x in g['work'] if x['id']=='w-q-walled'][0]
+assert a['state']=='walled', a['state']
+assert a['result'].get('answer') is False, a['result']
+assert 'answer' not in w, w
+assert any('not applied' in n for n in a['result'].get('notes',[])), a['result'].get('notes')"
+assert "9. the summary counts the refutations and lists each one" "
+t=open('$T/run.log').read()
+assert '(1 answered false)' in t, t[-1200:]
+assert any(l.strip().startswith('refuted') and 'w-q-false' in l for l in t.splitlines()), t[-1200:]"
+
+echo ""
+[ "$fails" = 0 ] && echo "  all assertions passed" || echo "  $fails assertion(s) failed"
+exit $((fails > 0))

@@ -1,0 +1,1578 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0b0b">
+<title>ostoyae</title>
+<style>
+  /* One room. Black, grey structure, one warm colour where something waits on the person, and
+     motion only where an agent is working. The list is the page; the graph is a second view. */
+  :root {
+    --bg:#0b0b0b; --panel:#0e0e0e; --line:#1e1e1e; --line2:#151515; --hover:#111111; --sel:#151515;
+    --fg:#d8d8d8; --dim:#7c7c7c; --faint:#4a4a4a; --warm:#d9a049; --work:#ececec;
+    --edge:#353535; --link-dead:#222222;
+    /* The graph's states: working amber, finished green, queued blue, stopped red. */
+    --running:#eab308; --done:#22c55e; --queued:#3b82f6; --failed:#ef4444;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:13px/1.45 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,system-ui,sans-serif;
+         -webkit-font-smoothing:antialiased; display:flex; flex-direction:column; height:100vh; height:100dvh; overflow:hidden; }
+  .mono, code { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  button { font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; }
+  button:disabled { cursor:default; }
+  button:focus-visible, input:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline:1px solid var(--dim); outline-offset:2px; }
+  a { color:inherit; }
+  .num { font-variant-numeric:tabular-nums; }
+  .warm { color:var(--warm); }
+  .dim { color:var(--dim); }
+  .faint { color:var(--faint); }
+
+  /* --- the top line --- */
+  #top { flex:none; display:flex; align-items:baseline; gap:18px; padding:13px 22px 11px; border-bottom:1px solid var(--line); min-width:0; }
+  #name { font-size:15px; font-weight:600; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:34vw; }
+  #name:hover { color:#fff; }
+  #boards { position:relative; }
+  #boards summary { list-style:none; color:var(--dim); cursor:pointer; white-space:nowrap; }
+  #boards summary::-webkit-details-marker { display:none; }
+  #boards summary:hover { color:var(--fg); }
+  #boards[open] summary { color:var(--fg); }
+  #boards .menu { position:absolute; left:0; top:24px; z-index:6; min-width:300px; max-width:min(520px,90vw); max-height:60vh; overflow-y:auto;
+                  background:var(--panel); border:1px solid var(--line); padding:6px 0; box-shadow:0 12px 40px rgba(0,0,0,.6); }
+  #boards .b { display:flex; justify-content:space-between; gap:16px; width:100%; padding:7px 14px; text-align:left; }
+  #boards .b:hover:enabled { background:var(--hover); }
+  #boards .b.on { color:var(--fg); }
+  #boards .b .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  #boards .b .m { color:var(--dim); white-space:nowrap; font-size:12px; }
+  #boards .gone { padding:7px 14px; color:var(--faint); font-size:12px; border-top:1px solid var(--line2); margin-top:4px; }
+  #state { flex:1; min-width:0; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #state b { font-weight:500; color:var(--fg); }
+  #state b.warm { color:var(--warm); }
+  #state .sep { color:var(--faint); margin:0 7px; }
+  #views { display:flex; gap:14px; color:var(--dim); white-space:nowrap; }
+  #views button { padding:2px 0; border-bottom:1px solid transparent; color:var(--dim); }
+  #views button:hover { color:var(--fg); }
+  #views button.on { color:var(--fg); border-bottom-color:var(--fg); }
+
+  /* --- the list --- */
+  #wrap { display:flex; flex:1; min-height:0; }
+  #list { flex:1; min-width:0; overflow-y:auto; padding:6px 0 60px; overscroll-behavior:contain; }
+  #tools { display:flex; align-items:center; gap:14px; padding:10px 22px 4px; }
+  #q { flex:1; max-width:340px; background:none; border:0; border-bottom:1px solid var(--line); color:var(--fg); padding:5px 0; font:inherit; }
+  #q::placeholder { color:var(--faint); }
+  #q:focus { border-bottom-color:var(--dim); outline:none; }
+  #tools .count { color:var(--faint); font-size:12px; }
+  .group { margin-top:16px; }
+  .group h2 { font-size:11.5px; font-weight:500; color:var(--dim); margin:0; padding:6px 22px; display:flex; gap:10px; align-items:baseline; letter-spacing:.01em; }
+  .group h2 .n { color:var(--faint); }
+  .group.needs h2 { color:var(--warm); }
+  .group.needs h2 .n { color:var(--warm); opacity:.7; }
+  .group .land { padding:4px 22px 8px; color:var(--dim); font-size:12px; display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .group .land code { color:var(--fg); user-select:all; cursor:text; }
+  .group .land button { color:var(--dim); border-bottom:1px solid var(--line); }
+  .group .land button:hover { color:var(--fg); }
+  .row { display:grid; grid-template-columns:16px minmax(0,1fr) auto; gap:1px 12px; align-items:baseline; width:100%;
+         padding:7px 22px; text-align:left; border-top:1px solid var(--line2); }
+  .row:hover { background:var(--hover); }
+  .row.sel { background:var(--sel); }
+  .row .dot { grid-row:1/3; align-self:start; margin-top:7px; width:6px; height:6px; border-radius:50%; background:var(--faint); justify-self:center; }
+  .row.one .dot { grid-row:1; }
+  .row.one { padding:8px 22px; }
+  .row.needs .dot { background:var(--warm); }
+  .row.working .dot { background:var(--work); animation:pulse 2.4s ease-in-out infinite; }
+  .row.done .dot { background:transparent; border:1px solid var(--faint); }
+  .row.stopped .dot { background:#2c2c2c; }
+  .row .t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .s { grid-column:2; color:var(--dim); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .m { color:var(--faint); font-size:12px; white-space:nowrap; text-align:right; }
+  .row .m .w { color:var(--dim); }
+  .row.needs .m .w { color:var(--warm); }
+  .row.working .m .w { color:var(--fg); }
+  .more { display:block; width:100%; text-align:left; padding:8px 22px 8px 50px; color:var(--dim); font-size:12px; border-top:1px solid var(--line2); }
+  .more:hover { color:var(--fg); }
+  #empty { padding:60px 22px; color:var(--dim); }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+
+  /* --- the neighbourhood of one job --- */
+  #rail { width:420px; flex:none; border-left:1px solid var(--line); overflow-y:auto; padding:16px 22px 60px; overscroll-behavior:contain; }
+  #rail h1 { font-size:15px; font-weight:600; margin:0 0 2px; letter-spacing:-.01em; line-height:1.3; padding-right:28px; }
+  #rail .sub { color:var(--dim); font-size:12px; overflow-wrap:anywhere; }
+  #rail .what { margin:14px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #rail h3 { font-size:11.5px; font-weight:500; color:var(--dim); margin:22px 0 6px; }
+  #rail .nb { display:block; width:100%; text-align:left; padding:6px 0; border-top:1px solid var(--line2); }
+  #rail .nb span:first-child { display:block; }
+  #rail .nb:hover { color:#fff; }
+  #rail .nb .w { display:block; color:var(--dim); font-size:12px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #rail .nb.needs .w { color:var(--warm); }
+  #rail .att { border-top:1px solid var(--line2); padding:8px 0; }
+  #rail .att .h { display:flex; justify-content:space-between; gap:12px; }
+  #rail .att .h .w { color:var(--dim); }
+  #rail .att .h .w.warm { color:var(--warm); }
+  #rail .att .h .w.work { color:var(--fg); }
+  #rail .att .h .id { color:var(--faint); }
+  #rail .att .body { color:var(--dim); font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
+  #rail .att .said { margin-top:6px; color:var(--fg); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #rail .att .live { margin-top:6px; padding:8px 10px; background:#0a0a0a; border:1px solid var(--line2); color:var(--dim); font-size:11.5px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:200px; overflow-y:auto; }
+  #rail .att .live .last { color:var(--fg); }
+  #rail .dec { margin-top:8px; border-top:1px solid var(--line); padding-top:10px; }
+  #rail .dec .q { color:var(--dim); font-size:12px; margin-top:10px; }
+  #rail .dec .it { margin-top:8px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+  #rail .dec .it .id { display:block; color:var(--faint); font-size:12px; }
+  #rail .dec .say { color:var(--dim); font-size:12px; margin-top:6px; line-height:1.5; }
+  #rail .dec .say b { color:var(--fg); font-weight:500; }
+  #rail .answer { display:flex; gap:10px; margin-top:12px; align-items:center; flex-wrap:wrap; }
+  #rail .answer button { padding:6px 14px; border:1px solid var(--line); color:var(--fg); }
+  #rail .answer button.yes { border-color:var(--warm); color:var(--warm); }
+  #rail .answer button:hover:enabled { background:var(--hover); }
+  #rail .answer button:disabled { opacity:.4; }
+  #rail .answer .said { color:var(--dim); font-size:12px; }
+  #rail .answer .said.err { color:var(--warm); }
+  #rail .cmd { display:block; margin-top:8px; padding:8px 10px; background:#0a0a0a; border:1px solid var(--line2); color:var(--fg);
+               white-space:pre-wrap; overflow-wrap:anywhere; user-select:all; cursor:text; }
+  #rail .note { color:var(--dim); font-size:12px; margin-top:8px; }
+  #rail .alt { margin-top:10px; }
+  #rail .alt summary { color:var(--dim); font-size:12px; cursor:pointer; list-style:none; }
+  #rail .alt summary::-webkit-details-marker { display:none; }
+  #rail .alt summary:hover { color:var(--fg); }
+  #rail .fold { line-height:1.5; overflow-wrap:anywhere; }
+  #rail .fold .more { background:none; border:0; padding:0; color:var(--fg); font:inherit; font-size:12px; cursor:pointer; border-bottom:1px solid var(--line2); }
+  #rail .fold .more:hover { border-bottom-color:var(--fg); }
+  #rail .fold.open .rest { white-space:pre-wrap; }
+  #rail .kv { display:flex; justify-content:space-between; gap:12px; padding:4px 0; border-top:1px solid var(--line2); }
+  #rail .kv span:first-child { color:var(--dim); }
+  #rail .kv span:last-child { text-align:right; overflow-wrap:anywhere; }
+  #close { position:absolute; right:16px; top:12px; color:var(--dim); font-size:18px; line-height:1; padding:4px 6px; }
+  #close:hover { color:var(--fg); }
+  #railwrap { position:relative; }
+  #rail input { background:none; border:1px solid var(--line); color:var(--fg); padding:5px 8px; font:inherit; font-size:12px; width:120px; }
+  #rail input::placeholder { color:var(--faint); }
+  #launch .row2 { display:flex; gap:10px; align-items:center; margin:6px 0; flex-wrap:wrap; }
+  #launch label { color:var(--dim); font-size:12px; min-width:110px; }
+  #launch button { padding:6px 14px; border:1px solid var(--line); }
+  #launch button:hover:enabled { background:var(--hover); }
+  #launch button:disabled { opacity:.4; }
+  #launch .note { color:var(--dim); font-size:12px; margin-top:6px; }
+
+  /* --- the graph, second view --- */
+  #canvas { flex:1; min-width:0; position:relative; overflow:hidden; cursor:grab; display:none; }
+  #canvas.dragging { cursor:grabbing; }
+  #canvas svg { width:100%; height:100%; display:block; }
+  body.graph #list { display:none; }
+  body.graph #canvas { display:block; }
+  #hud { position:absolute; left:14px; top:10px; display:flex; gap:12px; align-items:center; font-size:12px; color:var(--dim); user-select:none; z-index:2; }
+  #hud button { color:var(--dim); padding:3px 0; }
+  #hud button:hover { color:var(--fg); }
+  #hud #zoom { min-width:36px; text-align:center; color:var(--faint); }
+  #tip { position:absolute; display:none; max-width:360px; background:#0e0e0ef2; border:1px solid var(--line); padding:8px 10px; font-size:12px;
+         pointer-events:none; z-index:5; line-height:1.45; color:var(--dim); }
+  #tip b { color:var(--fg); font-weight:500; }
+  /* Nodes are lit. Each state is a colour and the core glows in it: working amber with a
+     breathing halo and a small satellite going round it, finished green, the decision warm,
+     queued a dim blue, suggested a dashed warm outline, stopped a dim red. The glow is a soft
+     drop-shadow, never a ring. Size is what a job unlocks. */
+  .node { cursor:pointer; --c:var(--queued); }
+  .node.gone, .link.gone { display:none; }
+  .node text { font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,system-ui,sans-serif; fill:var(--fg); text-anchor:middle;
+               pointer-events:none; user-select:none; paint-order:stroke; stroke:var(--bg); stroke-width:4px; stroke-linejoin:round; }
+  .node .core { fill:var(--c); stroke:var(--c); stroke-width:1.5; filter:drop-shadow(0 0 7px var(--c)); transition:r .5s cubic-bezier(.2,.9,.3,1.2); }
+  .node .halo { fill:var(--c); opacity:0; transform-box:fill-box; transform-origin:center; pointer-events:none; filter:blur(5px); transition:r .5s cubic-bezier(.2,.9,.3,1.2); }
+  .node.growing .core, .node.growing .halo { transition:none; }
+  .node text { transition:opacity .3s ease; }
+  .node.growing text, .node.flying text { opacity:0; }
+  .node .sat { fill:var(--running); opacity:0; pointer-events:none; filter:drop-shadow(0 0 4px var(--running)); }
+  .node .agent { font:600 9px/1 monospace; fill:var(--fg); opacity:.75; pointer-events:none; }
+  .node.ready .core, .node.waiting .core, .node.blocked .core { fill-opacity:.32; stroke-opacity:.85; filter:drop-shadow(0 0 4px rgba(59,130,246,.45)); }
+  .node.waiting .core, .node.blocked .core { fill-opacity:.18; stroke-opacity:.5; filter:none; }
+  .node.done { --c:var(--done); }
+  .node.running { --c:var(--running); }
+  .node.running .core { filter:drop-shadow(0 0 12px var(--c)); }
+  .node.running .halo { animation:breathe 2s ease-in-out infinite; }
+  .node.running .sat { opacity:1; }
+  .node.walled, .node.mapped, .node.deciding { --c:var(--warm); }
+  .node.proposed { --c:var(--warm); }
+  .node.proposed .core { fill-opacity:.12; stroke-dasharray:4 3; stroke-opacity:.9; filter:none; }
+  .node.proposed text, .node.failed text, .node.exhausted text, .node.blocked text, .node.waiting text { fill:var(--dim); }
+  .node.failed, .node.exhausted { --c:var(--failed); }
+  .node.failed .core, .node.exhausted .core { fill-opacity:.35; stroke-opacity:.6; filter:none; }
+  .node.rejected { opacity:.3; }
+  .node.frontier { --c:var(--queued); }
+  .node.frontier .core { fill-opacity:.2; stroke-opacity:.45; stroke-width:1; filter:none; }
+  .node.hot .core { stroke:#cfcfcf; }
+  .node.sel .core { stroke:#fff; stroke-width:2.5; }
+  .node .hit { fill:transparent; stroke:none; }
+  .node.frontier text { display:none; }
+  .node.frontier:hover text, .node.frontier.sel text, .node.frontier.hot text { display:block; fill:var(--dim); }
+  .node.bloom .halo { animation:bloom .9s ease-out 1; }
+  .band { fill:transparent; }
+  .band text { fill:var(--faint); font:500 12px ui-monospace,SFMono-Regular,Menlo,monospace; pointer-events:none; user-select:none; opacity:0; }
+  .band:hover text { opacity:1; }
+  @keyframes breathe { 0%,100% { opacity:.12; transform:scale(1) } 50% { opacity:.4; transform:scale(1.5) } }
+  @keyframes bloom { from { opacity:.55; transform:scale(.9) } to { opacity:0; transform:scale(2.8) } }
+  /* Edges are curves that draw themselves in. Dim into work nobody has reached; lit green out
+     of a finished job; a dashed march where an agent suggests one; warm where a yes would
+     open it. Out of a working job one amber pulse travels the edge. */
+  .link .vis { fill:none; stroke-linecap:round; stroke:var(--edge); stroke-width:2; }
+  .link .hit { fill:none; stroke:transparent; stroke-width:12; pointer-events:stroke; cursor:pointer; }
+  .link.lit .vis { stroke:var(--done); opacity:.8; filter:drop-shadow(0 0 3px rgba(34,197,94,.45)); }
+  .link.working .vis { stroke:var(--running); opacity:.3; }
+  .link.proposed .vis, .link.reach .vis { stroke:var(--warm); opacity:.7; stroke-dasharray:8 6; animation:march 1.2s linear infinite;
+                                          filter:drop-shadow(0 0 3px rgba(217,160,73,.4)); }
+  .link.rejected .vis { stroke:var(--link-dead); stroke-dasharray:2 6; animation:none; filter:none; }
+  .link.hot .vis, .link.hover .vis { opacity:1; stroke-width:2.5; }
+  .link.hot:not(.lit):not(.proposed):not(.reach):not(.working) .vis, .link.hover:not(.lit):not(.proposed):not(.reach):not(.working) .vis { stroke:#8a8a8a; }
+  @keyframes march { to { stroke-dashoffset:-28 } }
+  .pulse { fill:var(--running); pointer-events:none; filter:drop-shadow(0 0 6px var(--running)); }
+
+  @media (max-width:1100px) {
+    #rail { width:320px; }
+  }
+  @media (max-width:760px) {
+    #top { gap:12px; padding:12px 16px 10px; flex-wrap:wrap; }
+    #name { max-width:60vw; }
+    #state { flex-basis:100%; order:3; white-space:normal; line-height:1.5; }
+    /* On a phone the title takes the whole line and the state word sits under it. */
+    .row { padding:8px 16px; grid-template-columns:16px minmax(0,1fr); }
+    .row .m { grid-column:2; text-align:left; }
+    .row .dot { grid-row:1/4; }
+    .row.one .dot { grid-row:1/3; }
+    .group h2, .group .land, #tools { padding-left:16px; padding-right:16px; }
+    .more { padding-left:44px; }
+    #rail { display:none; }
+    body.open #rail { display:block; position:fixed; inset:0; width:auto; z-index:5; background:var(--bg); border-left:0; padding-top:18px; }
+    #close { display:none; }
+    body.open #close { display:block; position:fixed; z-index:6; }
+    body.graph #rail { display:none; }
+    body.graph.open #rail { display:block; }
+  }
+  @media (min-width:761px) {
+    #close { display:none; }
+    #rail:not(.on) { display:none; }
+  }
+  @media (prefers-reduced-motion:reduce) {
+    *, *::before, *::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+  }
+</style>
+
+<header id="top">
+  <button id="name" title="The board">connecting</button>
+  <details id="boards" hidden><summary>boards</summary><div class="menu" id="boardmenu"></div></details>
+  <div id="state"></div>
+  <div id="views"><button data-view="list" class="on">list</button><button data-view="graph">graph</button></div>
+</header>
+<div id="wrap">
+  <section id="list" aria-label="Jobs">
+    <div id="tools"><input id="q" type="search" placeholder="filter" autocomplete="off" spellcheck="false"><span class="count" id="qcount"></span></div>
+    <div id="groups"></div>
+    <div id="empty" hidden></div>
+  </section>
+  <div id="canvas">
+    <svg id="svg" role="group" aria-label="Work graph">
+      <g id="world"><g id="bands"></g><g id="links"></g><g id="pulses"></g><g id="nodes"></g></g>
+    </svg>
+    <div id="hud">
+      <button id="fit" title="Fit the graph to the window (f)">fit</button>
+      <button id="zoom-out" aria-label="Zoom out">&minus;</button><span id="zoom"></span><button id="zoom-in" aria-label="Zoom in">+</button>
+      <button id="clear" title="Clear the selection (Escape)">clear</button>
+    </div>
+    <div id="tip"></div>
+  </div>
+  <div id="railwrap"><aside id="rail" aria-label="Job details"></aside><button id="close" aria-label="Close">&times;</button></div>
+</div>
+
+<script>
+/* ---------------------------------------------------------------- words */
+// The file keeps its own words (`walled`, `proposed`, `a-0003`) because the record has to be
+// exact; the page says what they mean, in one place.
+const WORDS = {
+  ready: 'not started', running: 'working', done: 'finished', walled: 'hit a wall', mapped: 'mapped',
+  failed: 'failed', exhausted: 'out of tries', blocked: 'blocked', waiting: 'waiting', proposed: 'suggested', rejected: 'declined',
+};
+const MEANS = {
+  ready: 'nothing holds it; an agent could start on it now',
+  running: 'an agent is working on it right now',
+  done: 'an agent did the job and its work is on a branch',
+  walled: 'an agent tried, could not finish, and said what was missing; that is waiting on you',
+  mapped: 'a mapper turned it into tasks; the map is waiting on you',
+  failed: 'an agent tried and came back with nothing to show',
+  exhausted: 'every allowed try has been used and it is not done',
+  blocked: 'something it needs first is out of tries, so it cannot start',
+  waiting: 'something it needs first is not finished yet',
+  proposed: 'an agent said this should exist; it is not real until you say yes',
+  rejected: 'you said no; kept so the route stays closed',
+};
+const word = s => WORDS[s] || s;
+const means = s => MEANS[s] || '';
+const KIND = { map: 'mapper', prove: 'attempt', verify: 'judge' };
+const runWord = a => a.state === 'done' ? (a.kind === 'map' ? 'mapped' : a.kind === 'verify' ? 'judged' : 'finished') : word(a.state);
+const NEEDS = new Set(['walled', 'mapped']);
+const STOPPED = new Set(['failed', 'exhausted', 'rejected']);
+const QUEUED = new Set(['ready', 'waiting', 'blocked']);
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clip = (s, n) => String(s ?? '').length > n ? String(s).slice(0, n - 1) + '…' : String(s ?? '');
+// A title cut to n characters ends on a whole word: the last space before the limit, then the
+// ellipsis. A title whose second word is a path or a symbol longer than half the room
+// ("Re-run ../contrib-lab/tools/inventory_source.py so…") is cut inside it instead: "Re-run…"
+// says nothing, and a path has no word to end on.
+const clipWords = (s, n) => {
+  s = String(s ?? '');
+  if (s.length <= n) return s;
+  const head = s.slice(0, n - 1), sp = /[\s,;:.]/.test(s[n - 1]) ? head.length : head.lastIndexOf(' ');
+  return (sp >= n / 2 ? head.slice(0, sp) : head).replace(/[\s,;:]+$/, '') + '…';
+};
+const shortFile = f => String(f).split('/').slice(-2).join('/');
+const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+const dur = ms => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+};
+const ago = ts => { const t = Date.parse(ts ?? ''); return Number.isFinite(t) ? dur(Date.now() - t) + ' ago' : ''; };
+const span = (a, now = Date.now()) => {
+  const from = Date.parse(a.startedAt ?? ''), to = a.state === 'running' ? now : Date.parse(a.endedAt ?? '');
+  return Number.isFinite(from) && Number.isFinite(to) ? dur(to - from) : '';
+};
+const nameOf = (d, id) => { const n = d.nodes.find(x => x.id === id); return n?.label || (n?.what ? clip(n.what, 60) : id); };
+const svgEl = t => document.createElementNS('http://www.w3.org/2000/svg', t);
+
+/* ---------------------------------------------------------------- state */
+const params = new URLSearchParams(location.search);
+let selected = params.get('sel') || null;
+let view = params.get('view') === 'graph' ? 'graph' : 'list';
+let query = '';
+let latest = null, last = '';
+let graphError = null, graphUpdated = null;
+let decError = null, decBusy = false, decRetryAt = 0, decPending = false, decFor = null;
+let launchBusy = false, launchMsg = '';
+let boardOpen = false;           // the rail shows the board record (nothing selected) on a phone
+const expanded = new Set();      // groups the person asked to see in full
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const STILL = params.has('still') || reducedMotion.matches;
+const AUDIT = params.has('audit');
+const decisionSignature = d => `${d.file}:${d.mtime}`;
+const runnerLocked = d => !d.runner || !['none', 'gone'].includes(d.runner.state);
+function remember() {
+  const p = new URLSearchParams();
+  const board = params.get('board'); if (board) p.set('board', board);
+  if (view === 'graph') p.set('view', 'graph');
+  if (selected) p.set('sel', selected);
+  if (STILL && params.has('still')) p.set('still', '');
+  if (AUDIT) p.set('audit', '');
+  const s = p.toString();
+  history.replaceState(null, '', s ? `?${s}` : location.pathname);
+}
+function api(path) {
+  const board = params.get('board');
+  return board ? `${path}?board=${encodeURIComponent(board)}` : path;
+}
+
+/* ------------------------------------------------------------- the list */
+// What is waiting on the person, grouped the way the server groups decisions: by the run that
+// found it. Built from the fast snapshot so the top of the list never waits on the slow
+// consequences call; when `/api/decisions` lands, the rail adds what yes and no would do.
+function needsRows(d) {
+  const rows = [];
+  const covered = new Set();
+  for (const n of d.nodes) {
+    for (const a of n.attempts) {
+      const mine = d.pending.filter(p => p.foundBy.includes(a.id) || a.found.includes(p.id));
+      if (!mine.length) continue;
+      mine.forEach(p => covered.add(p.id));
+      rows.push({ kind: 'decision', id: n.id, attempt: a, node: n, proposals: mine });
+    }
+  }
+  const loose = d.pending.filter(p => !covered.has(p.id));
+  for (const p of loose) rows.push({ kind: 'loose', id: p.id, proposal: p });
+  // A job parked on proposals with no run on record (edge case): still needs the person.
+  for (const n of d.nodes) if (NEEDS.has(n.state) && !rows.some(r => r.id === n.id)) rows.push({ kind: 'job', id: n.id, node: n });
+  return rows;
+}
+const matches = (q, ...parts) => !q || parts.some(p => String(p ?? '').toLowerCase().includes(q));
+const lastLive = a => a.live?.lines?.length ? a.live.lines[a.live.lines.length - 1] : '';
+
+function renderList(d) {
+  const q = query.trim().toLowerCase();
+  const box = document.getElementById('groups');
+  const empty = document.getElementById('empty');
+  if (!d.nodes.length) {
+    box.innerHTML = '';
+    empty.hidden = false;
+    empty.textContent = 'This board has no jobs yet. Ask your agent to add the work you want done.';
+    document.getElementById('qcount').textContent = '';
+    return;
+  }
+  empty.hidden = true;
+  const now = Date.now();
+  const rowEl = (cls, id, title, sub, meta, stateWord, att) =>
+    `<button class="row ${cls}${id === selected ? ' sel' : ''}${sub ? '' : ' one'}" data-id="${esc(id)}"><span class="dot"></span>` +
+    `<span class="t">${esc(title)}</span><span class="m num"><span class="w"${att ? ` data-att="${esc(att)}"` : ''}>${esc(stateWord)}</span>${meta ? ` <span>· ${esc(meta)}</span>` : ''}</span>` +
+    (sub ? `<span class="s">${esc(sub)}</span>` : '') + `</button>`;
+
+  const groups = [];
+  // 1. what needs the person
+  const needs = needsRows(d).filter(r => r.kind === 'decision'
+    ? matches(q, r.node.label, r.node.id, r.node.what, r.attempt.wall, ...r.proposals.map(p => p.what))
+    : r.kind === 'loose' ? matches(q, r.proposal.id, r.proposal.what) : matches(q, r.node.label, r.node.id, r.node.what));
+  groups.push({ key: 'needs', cls: 'needs', title: 'Waiting on you', rows: needs.map(r => {
+    if (r.kind === 'decision') {
+      const a = r.attempt, n = r.node;
+      const what = a.state === 'walled' ? 'hit a wall' : a.state === 'done' ? (a.kind === 'map' ? 'mapped it' : 'finished, and suggests more') : runWord(a);
+      const sub = a.wall ? a.wall : (r.proposals[0]?.what ?? '');
+      return rowEl('needs', n.id, nameOf(d, n.id), sub, `${plural(r.proposals.length, 'suggestion')} · ${a.id}${a.endedAt ? ' · ' + ago(a.endedAt) : ''}`, what);
+    }
+    if (r.kind === 'loose') return rowEl('needs', r.proposal.id, r.proposal.what || r.proposal.id, r.proposal.kind === 'edge' ? 'a dependency an agent suggested' : 'a job an agent suggested', r.proposal.foundBy.length ? 'found by ' + r.proposal.foundBy.join(', ') : 'no run on record', 'suggested');
+    return rowEl('needs', r.node.id, nameOf(d, r.node.id), r.node.what, '', word(r.node.state));
+  }) });
+  // 2. what is running
+  const running = d.nodes.filter(n => n.state === 'running' && matches(q, n.label, n.id, n.what));
+  groups.push({ key: 'working', cls: 'working', title: 'Working', rows: running.map(n => {
+    const a = n.attempts.find(x => x.state === 'running') ?? n.attempts[n.attempts.length - 1];
+    const said = a ? lastLive(a) : '';
+    return rowEl('working', n.id, nameOf(d, n.id), said || n.what, `${a ? KIND[a.kind] || a.kind : ''}${a ? ' · ' + a.id : ''}`, 'working', a?.startedAt ? a.id : '');
+  }) });
+  // 3. queued: could start, waits on others, or cannot start. The instruction repeats across a
+  // hunt ("Prove X in Lean 4 against mathlib, sorry-free..."), so a labelled job shows only what
+  // its title does not say: what it waits for.
+  const queued = d.nodes.filter(n => QUEUED.has(n.state) && matches(q, n.label, n.id, n.what, word(n.state)));
+  const order = { ready: 0, waiting: 1, blocked: 2 };
+  queued.sort((a, b) => order[a.state] - order[b.state]);
+  groups.push({ key: 'queued', cls: 'queued', title: 'Queued', rows: queued.map(n => {
+    const unmet = n.needs.filter(id => d.nodes.find(x => x.id === id)?.state !== 'done');
+    const sub = unmet.length ? `${n.state === 'blocked' ? 'cannot start: ' : 'waits for '}${unmet.map(id => nameOf(d, id)).join(', ')}` : (n.label ? '' : '');
+    const meta = [n.spent ? `${n.spent} of ${n.max} tries` : '', n.leverage ? `unlocks ${n.leverage}` : ''].filter(Boolean).join(' · ');
+    return rowEl('queued', n.id, nameOf(d, n.id), sub, meta, n.state === 'ready' && d.mapping && n.nextKind === 'map' ? 'not mapped yet' : word(n.state));
+  }) });
+  // 4. what is done
+  const done = d.nodes.filter(n => n.state === 'done' && matches(q, n.label, n.id, n.what));
+  groups.push({ key: 'done', cls: 'done', title: 'Finished', rows: done.map(n => {
+    const a = [...n.attempts].reverse().find(x => x.state === 'done' && x.kind !== 'map' && x.kind !== 'verify');
+    return rowEl('done', n.id, nameOf(d, n.id), a?.branch ? `on ${a.branch}` : '', a ? `${a.id}${a.endedAt ? ' · ' + ago(a.endedAt) : ''}` : '', 'finished');
+  }), land: d.land });
+  // 5. what stopped
+  const stopped = d.nodes.filter(n => STOPPED.has(n.state) && matches(q, n.label, n.id, n.what, word(n.state)));
+  groups.push({ key: 'stopped', cls: 'stopped', title: 'Stopped', rows: stopped.map(n => {
+    const a = n.attempts[n.attempts.length - 1];
+    const sub = n.state === 'rejected' ? '' : (a?.why || '');
+    return rowEl('stopped', n.id, nameOf(d, n.id), sub, n.state === 'rejected' ? '' : `${n.spent} of ${n.max} tries`, word(n.state));
+  }) });
+
+  const LIMIT = 40;
+  box.innerHTML = groups.filter(g => g.rows.length).map(g => {
+    const all = expanded.has(g.key) || g.rows.length <= LIMIT;
+    const shown = all ? g.rows : g.rows.slice(0, LIMIT);
+    const land = g.land && g.land.commits_ahead > 0
+      ? `<div class="land"><span>${plural(g.land.commits_ahead, 'commit')} on ${esc(g.land.trunk)}, not yet on ${esc(g.land.base)}.</span><code title="${esc(g.land.command)}">ostoyae land ${esc(shortFile(d.file))}</code><button data-copy="${esc(g.land.command)}">copy the command</button></div>`
+      : '';
+    return `<div class="group ${g.cls}"><h2>${g.title} <span class="n num">${g.rows.length}</span></h2>${land}${shown.join('')}` +
+      (all ? '' : `<button class="more" data-more="${g.key}">show all ${g.rows.length}</button>`) + `</div>`;
+  }).join('');
+  const total = groups.reduce((s, g) => s + g.rows.length, 0);
+  document.getElementById('qcount').textContent = q ? `${total} of ${d.nodes.length}` : '';
+  box.querySelectorAll('.row').forEach(el => el.onclick = () => select(el.dataset.id === selected ? null : el.dataset.id));
+  box.querySelectorAll('[data-more]').forEach(el => el.onclick = () => { expanded.add(el.dataset.more); renderList(latest); });
+  box.querySelectorAll('[data-copy]').forEach(el => el.onclick = () => copyText(el.dataset.copy, el));
+  paintClocks(d);
+}
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'copied'; }
+  catch { btn.textContent = 'select it'; }
+  setTimeout(() => { btn.textContent = 'copy'; }, 1600);
+}
+// The clocks: how long each working agent has been at it. Rewritten every tick without
+// re-rendering the rows, so the list does not flicker.
+function paintClocks(d) {
+  const now = Date.now();
+  const all = d.nodes.flatMap(n => n.attempts);
+  document.querySelectorAll('.row.working .m .w[data-att]').forEach(el => {
+    const a = all.find(x => x.id === el.dataset.att);
+    el.textContent = a ? `working ${span(a, now)}`.trim() : 'working';
+  });
+  document.querySelectorAll('#rail [data-clock]').forEach(el => {
+    const a = all.find(x => x.id === el.dataset.clock);
+    if (a) el.textContent = span(a, now);
+  });
+}
+
+function select(id) {
+  selected = id;
+  boardOpen = false;
+  remember();
+  document.body.classList.toggle('open', !!selected);
+  if (latest) { renderList(latest); renderRail(latest); applySelection(); }
+  if (view === 'graph' && selected) world.moved = false;
+}
+
+/* --------------------------------------------------------------- the top */
+function renderTop(d) {
+  document.getElementById('name').textContent = d.graph;
+  document.title = `${d.graph} · ostoyae`;
+  const r = graphError ? { state: 'unknown', error: graphError } : (d.runner || { state: 'unknown' });
+  const needs = needsRows(d).length;
+  const done = d.nodes.filter(n => n.state === 'done').length;
+  const jobs = d.nodes.filter(n => !['proposed', 'rejected'].includes(n.state)).length;
+  const runner = {
+    live: `run live · ${plural(d.inFlight, 'agent')} working${r.beat ? ' · last beat ' + ago(r.beat) : ''}`,
+    wedged: `<b class="warm">run stuck</b> · no heartbeat for ${ago(r.beat).replace(' ago', '')} · pid ${r.pid}`,
+    gone: `<b class="warm">run died</b> ${ago(r.beat)}${d.inFlight ? ` · ${plural(d.inFlight, 'job')} still marked working` : ''}`,
+    unknown: `<b class="warm">runner unverified</b>${r.error ? ' · ' + esc(r.error) : ''}`,
+    none: d.inFlight ? `no run · ${plural(d.inFlight, 'attempt')} still marked working` : 'no run',
+  }[r.state] || `runner state ${esc(r.state)}`;
+  const parts = [runner,
+    needs ? `<b class="warm">${plural(needs, 'decision')} waiting on you</b>` : 'nothing waiting on you',
+    `<b>${done}</b> of ${jobs} finished`,
+    d.readOnly ? 'view only' : ''].filter(Boolean);
+  document.getElementById('state').innerHTML = parts.join('<span class="sep">·</span>');
+}
+function renderBoards(d) {
+  const det = document.getElementById('boards'), menu = document.getElementById('boardmenu');
+  const bs = Array.isArray(d.boards) ? d.boards : [];
+  const live = bs.filter(b => !b.gone);
+  const gone = bs.filter(b => b.gone);
+  const sig = JSON.stringify(bs);
+  if (menu.dataset.sig === sig) return;
+  menu.dataset.sig = sig;
+  det.hidden = live.length <= 1 && !gone.length;
+  menu.innerHTML = live.map(b => `<button class="b${b.current ? ' on' : ''}" data-path="${esc(b.path)}" ${b.current || b.error ? 'disabled' : ''}>` +
+      `<span class="n">${esc(b.name)}</span><span class="m num">${b.error ? esc(clip(b.error, 40)) : `${b.work} jobs${b.pending ? ` · ${b.pending} waiting on you` : ''}`}</span></button>`).join('') +
+    (gone.length ? `<div class="gone">${plural(gone.length, 'board')} whose file is gone, not shown</div>` : '');
+  menu.querySelectorAll('.b:not(.on)').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const response = await fetch(api('/api/switch'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: b.dataset.path }) });
+      const out = await response.json();
+      if (!response.ok || out.error) throw new Error(out.error || `HTTP ${response.status}`);
+      location.assign(out.url);
+    } catch (e) {
+      // Read-only viewers cannot switch through the server; the page can still point at a board it knows.
+      location.assign(`/?board=${encodeURIComponent(b.dataset.path)}`);
+    }
+  });
+}
+
+/* --------------------------------------------------------------- the rail */
+// The neighbourhood of one job: what it waits on, what waits on it, its attempts, the agent's
+// words, the branch, and what is waiting on the person because of it. Not the whole graph.
+function renderRail(d) {
+  const rail = document.getElementById('rail');
+  const sel = d.nodes.find(n => n.id === selected);
+  const loose = !sel && selected ? d.pending.find(p => p.id === selected) : null;
+  rail.classList.toggle('on', !!(sel || loose || boardOpen));
+  if (loose) { rail.innerHTML = looseHtml(d, loose); wireFolds(rail); wireAnswers(rail); return; }
+  if (!sel) { rail.innerHTML = boardOpen ? boardHtml(d) : ''; if (boardOpen) wireLaunch(d); return; }
+  const now = Date.now();
+  const stateClass = NEEDS.has(sel.state) || sel.state === 'proposed' ? 'warm' : sel.state === 'running' ? 'work' : '';
+  const needs = sel.needs.map(id => ({ id, n: d.nodes.find(x => x.id === id) }));
+  const unblocks = d.edges.filter(e => e.from === sel.id && e.status !== 'rejected').map(e => ({ id: e.to, e, n: d.nodes.find(x => x.id === e.to) }));
+  const nb = (x, extra) => `<button class="nb${x.n && NEEDS.has(x.n.state) ? ' needs' : ''}" data-id="${esc(x.id)}"><span>${esc(x.n ? nameOf(d, x.id) : x.id)}</span><span class="w">${esc(x.n ? word(x.n.state) : 'not on the board')}${extra ? ' · ' + esc(extra) : ''}</span></button>`;
+  const attempts = [...sel.attempts].reverse().map(a => {
+    const w = a.state === 'walled' ? 'warm' : a.state === 'running' ? 'work' : '';
+    const lines = a.live?.lines ?? [];
+    return `<div class="att">
+      <div class="h"><span><span class="w ${w}">${esc(runWord(a))}</span> <span class="dim">${esc(KIND[a.kind] || a.kind)}</span></span>
+        <span class="id num">${esc(a.id)}${a.from ? ' after ' + esc(a.from) : ''} <span data-clock="${esc(a.id)}">${esc(span(a, now))}</span></span></div>
+      <div class="dim">${esc([a.agent, a.model, a.effort].filter(Boolean).join(' · ') || 'executor unknown')}</div>
+      ${a.wall ? fold(a.wall, 'said') : ''}
+      ${a.state === 'running' && lines.length ? `<div class="live">${lines.slice(0, -1).map(esc).join('\n')}${lines.length > 1 ? '\n' : ''}<span class="last">${esc(lines[lines.length - 1])}</span></div>` : ''}
+      ${a.why && a.state !== 'running' && a.state !== 'done' && !a.wall ? fold(a.why) : ''}
+      ${a.map ? fold(`map: done means ${a.map.settles}; looks ${a.map.cost ?? 'unknown'}${a.map.notes ? '. ' + a.map.notes : ''}`) : ''}
+      ${a.found?.length ? `<div class="body">found: ${a.found.map(x => esc(nameOf(d, x))).join(', ')}</div>` : ''}
+      ${a.notes?.length ? `<div class="body">${a.notes.map(esc).join('; ')}</div>` : ''}
+      ${a.branch ? `<div class="body mono">${esc(a.branch)}</div>` : ''}
+    </div>`;
+  }).join('');
+  const groups = needsRows(d).filter(r => r.kind === 'decision' && r.id === sel.id);
+  rail.innerHTML = `
+    <h1>${esc(sel.label || clip(sel.what, 90))}</h1>
+    <div class="sub num"><span class="${stateClass}">${esc(word(sel.state))}</span> · ${esc(sel.id)} · ${sel.spent} of ${sel.max} tries${d.mapping ? ` · ${sel.mapSpent} of ${sel.mapMax} map tries` : ''}${sel.leverage ? ` · unlocks ${sel.leverage}` : ''}</div>
+    <div class="what">${esc(sel.what)}</div>
+    ${groups.map(g => decisionHtml(d, g)).join('')}
+    ${sel.map ? `<h3>Done means</h3><div class="dim">${esc(sel.map.settles)}</div><div class="dim" style="margin-top:4px">looks ${esc(sel.map.cost ?? 'unknown')}${sel.map.by ? ` · mapped by ${esc(sel.map.by)}` : ''}</div>${sel.map.notes ? fold(sel.map.notes, 'dim') : ''}` : ''}
+    ${needs.length ? `<h3>Waits on</h3>${needs.map(x => nb(x)).join('')}` : ''}
+    ${unblocks.length ? `<h3>Unblocks</h3>${unblocks.map(x => nb(x, x.e.status === 'proposed' ? 'suggested link' : x.e.why && x.e.status !== 'authored' ? clip(x.e.why, 40) : '')).join('')}` : ''}
+    <h3>Attempts${sel.attempts.length ? ` <span class="faint num">${sel.attempts.length}</span>` : ''}</h3>
+    ${attempts || '<div class="dim">none yet</div>'}`;
+  rail.querySelectorAll('.nb').forEach(el => el.onclick = () => select(el.dataset.id));
+  wireFolds(rail);
+  wireAnswers(rail);
+}
+
+// Long agent text (a mapper's notes, a wall) shows its first lines and opens on request. The
+// rail is for a glance; the whole paragraph is one click away, not in the way.
+function fold(text, cls = 'body') {
+  if (text.length <= 320) return `<div class="${cls}" style="margin-top:6px">${esc(text)}</div>`;
+  const cut = text.lastIndexOf(' ', 300);
+  return `<div class="${cls} fold" style="margin-top:6px"><span class="short">${esc(text.slice(0, cut > 200 ? cut : 300))}… </span><span class="rest" hidden>${esc(text)} </span><button class="more" type="button">more</button></div>`;
+}
+function wireFolds(root) {
+  root.querySelectorAll('.fold .more').forEach(b => b.onclick = () => {
+    const f = b.closest('.fold'), open = f.classList.toggle('open');
+    f.querySelector('.short').hidden = open; f.querySelector('.rest').hidden = !open;
+    b.textContent = open ? 'less' : 'more';
+  });
+}
+
+// One decision: what the run said, what it proposes, what yes and no would do, and the answer.
+// The consequences come from the server, which asked the scheduler against a copy of the
+// graph; until they arrive the proposals are listed as they are.
+function decisionHtml(d, g) {
+  const a = g.attempt;
+  const full = Array.isArray(d.decisions) ? d.decisions.find(x => x.attempt === a.id) : null;
+  const ids = g.proposals.map(p => p.id);
+  const nm = id => nameOf(d, id);
+  const list = xs => xs.length <= 1 ? xs.map(nm).join('') : xs.slice(0, -1).map(nm).join(', ') + ' and ' + nm(xs[xs.length - 1]);
+  // A proposal reads as one line with its id; the mapper's full instruction opens on request.
+  const item = p => {
+    const t = String(p.what ?? '');
+    const head = t.length > 110 ? t.slice(0, t.lastIndexOf(' ', 100) > 60 ? t.lastIndexOf(' ', 100) : 100) : t;
+    return `<div class="it${head.length < t.length ? ' fold' : ''}"><span class="id mono">${esc(p.id)}</span>` +
+      (head.length < t.length ? `<span class="short">${esc(head)}… </span><span class="rest" hidden>${esc(t)} </span><button class="more" type="button">more</button>` : esc(t)) + `</div>`;
+  };
+  let yes = '', no = '';
+  if (full) {
+    const y = full.yes, n = full.no;
+    // Counts and the selected job's fate. The proposals themselves are listed below with their
+    // ids; a sentence that recites seven unlabelled instructions cannot be read.
+    const named = xs => xs.length <= 2 ? list(xs) : `${xs.length} of them`;
+    const ready = y.readyAtOnce.length ? `${named(y.readyAtOnce)} could start right away.` : 'Nothing new could start right away.';
+    const chained = y.waits.filter(x => x.item !== g.id).length;
+    const selfWait = y.waits.find(x => x.item === g.id);
+    yes = [`${plural(y.adds.length, 'new job')} on the board.`, ready,
+      chained ? `${chained === 1 ? 'One waits' : `${chained} wait`} on another first.` : '',
+      selfWait ? `${nm(g.id)} then waits for ${named(selfWait.on)}.` : `${nm(g.id)} would be ${word(y.itemAfter)}.`].filter(Boolean).join(' ');
+    const node = g.node;
+    let retry = '';
+    if (n.itemAfter === 'ready' && node) {
+      const left = `${Math.max(0, node.max - node.spent)} of ${node.max} tries left`;
+      retry = a.kind === 'map' ? ` The next attempt would run without the map, ${left}.` : ` The next attempt would walk into the same wall, ${left}.`;
+    }
+    no = `These ${plural(ids.length, 'suggestion')} are closed. ${nm(g.id)} is ${word(n.itemAfter)}.${retry}`;
+  }
+  const opening = a.state === 'walled' ? 'It stopped and says this is missing:' : a.kind === 'map' ? 'The mapper broke it into' : 'It finished and says this should follow:';
+  return `<div class="dec">
+    <h3 class="warm">Waiting on you <span class="faint num">${esc(a.id)}</span></h3>
+    <div class="q">${opening} ${plural(ids.length, 'suggestion')}.</div>
+    ${yes ? `<div class="say"><b>Yes:</b> ${esc(yes)}</div><div class="say"><b>No:</b> ${esc(no)}</div>` : ''}
+    ${answerHtml(d, ids)}
+    <div class="q">The ${ids.length === 1 ? 'suggestion' : 'suggestions'}</div>
+    ${g.proposals.map(item).join('')}
+  </div>`;
+}
+function looseHtml(d, p) {
+  return `<h1>${esc(p.what || p.id)}</h1>
+    <div class="sub"><span class="warm">suggested</span> · ${esc(p.id)} · ${p.kind === 'edge' ? 'a dependency' : 'a job'}${p.foundBy.length ? ' · found by ' + p.foundBy.map(esc).join(', ') : ' · no run on record'}${p.foundAt ? ' · ' + esc(p.foundAt.slice(0, 10)) : ''}</div>
+    <div class="dec">${answerHtml(d, [p.id])}</div>`;
+}
+// Yes and no, when this viewer may write; otherwise the command that answers from a terminal.
+function answerHtml(d, ids) {
+  const cmd = (verb) => `${d.cli ?? 'ostoyae'} ${verb} ${d.fileQuoted ?? shortFile(d.file)} ${ids.join(',')}`;
+  if (d.readOnly) return `<div class="note">This page only shows the board. Answer from a terminal:</div><code class="cmd">${esc(cmd('confirm'))}</code><code class="cmd">${esc(cmd('reject'))}</code>`;
+  return `<div class="answer" data-ids="${esc(ids.join(','))}"><button class="yes">Yes to ${ids.length === 1 ? 'this' : `these ${ids.length}`}</button><button class="no">No</button><span class="said"></span></div>
+    <details class="alt"><summary>or from a terminal</summary><code class="cmd">${esc(cmd('confirm'))}</code><code class="cmd">${esc(cmd('reject'))}</code></details>`;
+}
+function wireAnswers(root) {
+  root.querySelectorAll('.answer').forEach(el => {
+    const ids = el.dataset.ids.split(',').filter(Boolean);
+    const said = el.querySelector('.said');
+    const send = async (kind) => {
+      if (!decisionsAvailable(latest)) return;
+      decBusy = true; updateAvailability(latest);
+      el.querySelectorAll('button').forEach(b => b.disabled = true);
+      said.className = 'said'; said.textContent = kind === 'confirm' ? 'saying yes…' : 'saying no…';
+      try {
+        const r = await fetch(api('/api/decide'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [kind]: ids }) });
+        const out = await r.json();
+        if (!r.ok) { said.className = 'said err'; said.textContent = out.error || `refused (${r.status})`; el.querySelectorAll('button').forEach(b => b.disabled = false); return; }
+        said.textContent = `${out.changed.length} answered${out.skipped.length ? `, ${out.skipped.length} already answered` : ''}. Written to the file.`;
+        decFor = null; decRetryAt = 0; last = ''; tick();
+      } catch { said.className = 'said err'; said.textContent = 'could not reach the viewer'; el.querySelectorAll('button').forEach(b => b.disabled = false); }
+      finally { decBusy = false; updateAvailability(latest); }
+    };
+    el.querySelector('.yes').onclick = () => send('confirm');
+    el.querySelector('.no').onclick = () => send('reject');
+  });
+  updateAvailability(latest);
+}
+function decisionsAvailable(d) {
+  return !!d && !graphError && !decBusy && !decError && !d.readOnly && !runnerLocked(d) && decFor === decisionSignature(d);
+}
+function updateAvailability(d) {
+  const why = graphError ? 'Connection lost; answers are paused.'
+    : decError ? `Consequences could not load (${decError}); answers are paused.`
+    : d && runnerLocked(d) ? 'A run holds this board; answers are paused until it stops.'
+    : d && decFor !== decisionSignature(d) ? 'Working out what yes and no would do…' : '';
+  document.querySelectorAll('#rail .answer').forEach(el => {
+    el.querySelectorAll('button').forEach(b => { b.disabled = !decisionsAvailable(d); });
+    const said = el.querySelector('.said');
+    if (said && !said.textContent.includes('Written') && !said.classList.contains('err')) said.textContent = why;
+  });
+}
+
+// Nothing selected: the board itself, quietly. Where it is, what it has cost, what runs it.
+function boardHtml(d) {
+  const kv = (k, v) => `<div class="kv"><span>${esc(k)}</span><span class="num">${esc(String(v))}</span></div>`;
+  const usd = Number.isFinite(d.spent?.usd) ? `$${d.spent.usd.toFixed(2)}` : 'unknown';
+  const ac = d.accumulation;
+  return `<h1>${esc(d.graph)}</h1>
+    <div class="sub mono">${esc(d.file)}</div>
+    <h3>Record</h3>
+    ${kv('jobs', d.nodes.filter(n => !['proposed', 'rejected'].includes(n.state)).length)}
+    ${kv('attempts recorded', d.attempts)}
+    ${kv('at a time, at most', d.concurrency)}
+    ${kv('tries per job', d.maxAttempts)}
+    ${d.mapping ? kv('mapping', `on · ${d.mapping.maxAttempts} map ${d.mapping.maxAttempts === 1 ? 'try' : 'tries'} per job`) : ''}
+    ${kv('recorded spend', usd)}
+    ${d.spent?.unpriced ? kv('unpriced attempts', `${d.spent.unpriced}, counted as unknown`) : ''}
+    ${ac ? kv('dependencies found by agents', `${ac.byRun} of ${ac.total}${ac.days.length ? ` · ${plural(ac.days.length, 'day')}` : ''}`) : ''}
+    ${d.lastRun?.why ? kv('last run ended', d.lastRun.why) : ''}
+    ${d.sandbox?.repo ? kv('repository', d.sandbox.repo) : ''}
+    ${d.sandbox?.base ? kv('base', d.sandbox.base) : ''}
+    ${d.land?.trunk ? kv('trunk', `${d.land.trunk}${d.land.exists ? ` · ${plural(d.land.commits_ahead, 'commit')} ahead` : ' · not yet'}`) : ''}
+    ${d.execution?.provider ? kv('executor', `${d.execution.provider}${d.execution.model ? ' · ' + d.execution.model : ''}`) : ''}
+    ${d.readOnly ? '<div class="note">This page only shows the board. Decisions and launches happen in a terminal.</div>' : `<h3>Launch a capped run</h3><div id="launch"></div>`}`;
+}
+
+/* ---------------------------------------------------------------- launch */
+// The cap is the operator's and it is the point of this box: the engine reserves for attempts
+// in flight, so the number typed here binds rather than hopes. Dollars, invocations or output
+// tokens; the first to bind stops new launches.
+function launchBudgetsValid(cap, invocations, outputTokens) {
+  if (cap !== '' && Number.isFinite(Number(cap)) && Number(cap) > 0) return true;
+  for (const v of [invocations, outputTokens]) if (v !== '' && v !== undefined && Number.isInteger(Number(v)) && Number(v) > 0) return true;
+  return false;
+}
+function launchStartedMsg(out) {
+  if (out.cap != null && out.invocations == null && out.outputTokens == null) return `Run started, process ${out.pid}. Total cap $${Number(out.cap).toFixed(2)}.`;
+  const parts = [];
+  if (out.cap != null) parts.push(`$${Number(out.cap).toFixed(2)}`);
+  if (out.invocations != null) parts.push(`${out.invocations} invocations`);
+  if (out.outputTokens != null) parts.push(`${out.outputTokens} output tokens`);
+  return `Run started, process ${out.pid}. Caps: ${parts.join(' · ')}.`;
+}
+function wireLaunch(d) {
+  const el = document.getElementById('launch');
+  if (!el || d.readOnly) return;
+  if (el.dataset.built !== 'yes') {
+    el.innerHTML = `
+      <div class="row2"><label for="cap">dollar cap</label><input id="cap" type="number" min="0.5" step="0.5" placeholder="none" inputmode="decimal"></div>
+      <div class="row2"><label for="invcap">invocations</label><input id="invcap" type="number" min="1" step="1" placeholder="none" inputmode="numeric"></div>
+      <div class="row2"><label for="tokcap">output tokens</label><input id="tokcap" type="number" min="1" step="1" placeholder="none" inputmode="numeric"></div>
+      <div class="row2"><label for="only">only this job</label><input id="only" type="text" placeholder="all ready jobs"></div>
+      <div class="row2"><button id="go">Launch</button></div>
+      <div id="lmsg" class="note" role="status"></div><div class="note" id="lnote"></div>`;
+    el.dataset.built = 'yes';
+    for (const id of ['cap', 'invcap', 'tokcap']) document.getElementById(id).addEventListener('input', () => { if (latest) paintLaunch(latest); });
+    document.getElementById('go').onclick = async () => {
+      if (launchBusy || graphError || runnerLocked(latest)) return;
+      const cap = document.getElementById('cap').value, only = document.getElementById('only').value.trim();
+      const invocations = document.getElementById('invcap').value, outputTokens = document.getElementById('tokcap').value;
+      if (!launchBudgetsValid(cap, invocations, outputTokens)) { launchMsg = 'Enter at least one positive budget: dollars, invocations, or output tokens.'; paintLaunch(latest); return; }
+      launchBusy = true; launchMsg = 'Checking readiness before launch…'; paintLaunch(latest);
+      try {
+        const response = await fetch(api('/api/launch'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+          cap: cap || undefined, invocations: invocations || undefined, outputTokens: outputTokens || undefined, only: only || undefined }) });
+        const out = await response.json();
+        if (!response.ok || out.error) throw new Error(out.error || `HTTP ${response.status}`);
+        launchMsg = launchStartedMsg(out);
+        last = ''; tick();
+      } catch (error) { launchMsg = `Launch refused: ${error.message}`; }
+      finally { launchBusy = false; if (latest) paintLaunch(latest); }
+    };
+  }
+  paintLaunch(d);
+}
+function paintLaunch(d) {
+  const go = document.getElementById('go'); if (!go) return;
+  const locked = runnerLocked(d) || !!graphError;
+  const ready = Array.isArray(d.ready) ? d.ready.length : null;
+  const ok = launchBudgetsValid(document.getElementById('cap').value, document.getElementById('invcap').value, document.getElementById('tokcap').value);
+  go.disabled = locked || launchBusy || ready === null || ready === 0 || !ok || d.execution?.error !== undefined;
+  document.getElementById('lmsg').textContent = launchMsg;
+  document.getElementById('lnote').textContent = graphError ? 'Connection lost. Launch is paused.'
+    : d.execution?.error ? `Configuration error: ${d.execution.error}`
+    : locked ? 'A run holds this board. Stop it before starting another.'
+    : ready === 0 ? 'Nothing is ready to start.'
+    : `${plural(ready, 'job')} ready · ${d.execution?.provider ?? 'executor unknown'}${d.execution?.model ? ' · ' + d.execution.model : ''}. Caps count every recorded attempt on this board${d.spent?.unpriced ? `; ${d.spent.unpriced} unpriced attempts can hold a dollar-capped launch` : ''}.`;
+}
+
+/* --------------------------------------------------------------- polling */
+function refreshDecisions(sig) {
+  if (decPending || decFor === sig || Date.now() < decRetryAt) return;
+  // What yes and no would do is read-only knowledge; a page without buttons still shows it, so the
+  // person answering from a terminal knows as much as the one with buttons.
+  if (!latest.pending.length) { decFor = sig; decError = null; latest.decisions = []; updateAvailability(latest); return; }
+  decPending = true;
+  updateAvailability(latest);
+  fetch(api('/api/decisions'), { cache: 'no-store', signal: AbortSignal.timeout(30000) })
+    .then(async r => { const j = await r.json(); if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`); return j; })
+    .then(j => {
+      if (!Array.isArray(j.decisions)) throw new Error('the server did not return decision records');
+      if (!latest || decisionSignature(latest) !== sig) return;
+      decFor = sig; decError = null; latest.decisions = j.decisions;
+      if (!decBusy) renderRail(latest);
+    })
+    .catch(error => {
+      if (!latest || decisionSignature(latest) !== sig) return;
+      decError = error.message; decRetryAt = Date.now() + 5000;
+      updateAvailability(latest);
+    })
+    .finally(() => { decPending = false; });
+}
+let tickTimer = null, tickBusy = false;
+async function tick() {
+  if (tickBusy) return;
+  clearTimeout(tickTimer); tickBusy = true;
+  try {
+    const r = await fetch(api('/api/graph'), { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+    for (const name of ['nodes', 'edges', 'pending', 'ready']) if (!Array.isArray(d[name])) throw new Error(`The board response is missing ${name}.`);
+    const previous = latest;
+    graphError = null; graphUpdated = new Date();
+    if (previous?.file === d.file && Array.isArray(previous.decisions)) d.decisions = previous.decisions;
+    latest = d;
+    const { runner, decisions, boards, mtime, ...graph } = d;
+    const sig = JSON.stringify(graph);
+    if (sig !== last) {
+      last = sig;
+      sync(d);
+      renderList(d); renderRail(d);
+      if (STILL) frame();
+      if (STILL && AUDIT) auditOverlaps();
+    } else { paintClocks(d); }
+    renderTop(d); renderBoards(d);
+    if (!selected) paintLaunch(d);
+    updateAvailability(d);
+    refreshDecisions(decisionSignature(d));
+  } catch (error) {
+    graphError = error.message;
+    const empty = document.getElementById('empty');
+    if (!latest) { empty.hidden = false; empty.textContent = `Cannot reach the viewer. ${error.message}`; }
+    if (latest) renderTop(latest);
+    updateAvailability(latest);
+  } finally {
+    tickBusy = false; tickTimer = setTimeout(tick, 1200);
+  }
+}
+
+/* ---------------------------------------------------------------- hands */
+document.getElementById('q').addEventListener('input', ev => { query = ev.target.value; if (latest) renderList(latest); });
+document.getElementById('name').onclick = () => { selected = null; boardOpen = !boardOpen; remember(); document.body.classList.toggle('open', boardOpen); if (latest) { renderList(latest); renderRail(latest); applySelection(); } };
+document.getElementById('close').onclick = () => { boardOpen = false; select(null); };
+document.querySelectorAll('#views button').forEach(b => b.onclick = () => setView(b.dataset.view));
+function setView(v) {
+  view = v;
+  document.body.classList.toggle('graph', view === 'graph');
+  document.querySelectorAll('#views button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  remember();
+  if (view === 'graph') { world.moved = false; world.fit(); if (STILL) frame(); }
+}
+addEventListener('keydown', ev => {
+  if (ev.target.closest('input, textarea, select, [contenteditable]')) { if (ev.key === 'Escape') ev.target.blur(); return; }
+  if (ev.key === 'Escape' && (selected || boardOpen)) { boardOpen = false; select(null); }
+  if (ev.key === 'f' && !ev.metaKey && !ev.ctrlKey && view === 'graph') fitAll();
+  if (ev.key === '/' ) { ev.preventDefault(); document.getElementById('q').focus(); }
+});
+document.addEventListener('click', ev => { const det = document.getElementById('boards'); if (det.open && !det.contains(ev.target)) det.open = false; });
+
+/* ----------------------------------------------------------------- graph
+   The second view. Time runs left to right: what was asked for sits on the left, what it
+   opened fans right. The graph is mycelium: nodes are lit in the colour of their state and
+   edges are curves that draw themselves in. A job an agent is working on is amber, breathes,
+   carries a small satellite and sends one pulse down its edges; a finished job is green and
+   blooms once; a suggestion is a dashed march; a new job grows out of the job whose run found
+   it. A job is sized by what it unlocks. Jobs nobody has reached sit as a dim column at the
+   far right, unlabelled until hover. */
+const layers = { bands: document.getElementById('bands'), links: document.getElementById('links'), pulses: document.getElementById('pulses'), nodes: document.getElementById('nodes') };
+const sim = { work: new Map(), links: [], linkEls: new Map(), t: 0, bandLabels: [], deciding: new Set() };
+const R_MIN = 10, R_MAX = 24, R_FRONT = 6, PULSE_S = 3.2, GROW_MS = 600;
+
+function sync(d) {
+  const first = sim.work.size === 0;
+  const keep = new Set();
+  const byAttempt = new Map();
+  for (const n of d.nodes) for (const a of n.attempts) byAttempt.set(a.id, n.id);
+  for (const n of d.nodes) {
+    keep.add(n.id);
+    let v = sim.work.get(n.id);
+    if (!v) {
+      v = { id: n.id, x: 0, y: 0, r: R_MIN, sig: '', fresh: true };
+      v.el = makeWorkEl(v);
+      sim.work.set(n.id, v);
+    }
+    v.data = n;
+    v.finder = (n.foundBy ?? []).map(a => byAttempt.get(a)).find(id => id && id !== n.id) ?? null;
+  }
+  for (const [id, v] of sim.work) if (!keep.has(id)) { v.el.remove(); sim.work.delete(id); }
+
+  sim.links = [];
+  for (const e of d.edges) {
+    const a = sim.work.get(e.from), b = sim.work.get(e.to);
+    if (a && b && a !== b) sim.links.push({ id: e.id, kind: 'dep', a, b, status: e.status, data: e });
+  }
+  // Derivation: the job whose run found this one, drawn only to the sources of what it found;
+  // the rest of the family hangs off those by its own edges.
+  const hasIn = new Set(sim.links.filter(l => l.status !== 'rejected').map(l => l.b.id));
+  for (const v of sim.work.values()) {
+    const f = v.finder ? sim.work.get(v.finder) : null;
+    if (!f || hasIn.has(v.id)) continue;
+    sim.links.push({ id: `found:${f.id}:${v.id}`, kind: 'found', a: f, b: v });
+  }
+  sim.deciding = new Set(needsRows(d).map(r => r.id).filter(id => sim.work.has(id)));
+  const weight = l => l.kind === 'found' ? (l.a.data.state === 'done' ? 4 : sim.deciding.has(l.a.id) ? 3 : 0)
+    : l.a.data.state === 'done' ? 4 : l.status === 'proposed' ? 2 : 1;
+  sim.links.sort((p, q) => weight(p) - weight(q));
+
+  relayout();
+  // A found link that would run against a dependency path says nothing the path does not.
+  sim.links = sim.links.filter(l => !l.back);
+  syncLinkEls();
+  const now = performance.now();
+  for (const v of sim.work.values()) {
+    if (!v.fresh) continue;
+    v.fresh = false;
+    const f = !first && v.finder ? sim.work.get(v.finder) : null;
+    // A new job grows out of the job whose run found it: it leaves the finder's node small,
+    // travels the edge and settles in its seat while the edge draws in behind it.
+    if (f && !STILL) { v.x = f.x; v.y = f.y; v.from = f; v.born = now; }
+    else { v.x = v.tx; v.y = v.ty; }
+  }
+  for (const v of sim.work.values()) updateWorkEl(v, d, first);
+  focusIfPhone(d);
+  applySelection();
+}
+function syncLinkEls() {
+  const keep = new Set(), now = performance.now();
+  for (const l of sim.links) {
+    keep.add(l.id);
+    let el = sim.linkEls.get(l.id);
+    if (!el) {
+      const g = svgEl('g'), vis = svgEl('path'), hit = svgEl('path');
+      vis.setAttribute('class', 'vis'); hit.setAttribute('class', 'hit');
+      g.appendChild(vis); g.appendChild(hit);
+      el = { g, vis, hit, born: STILL ? 0 : now };
+      sim.linkEls.set(l.id, el);
+      g.addEventListener('pointerenter', ev => { g.classList.add('hover'); showTip(l.kind === 'dep' ? tipEdge(latest, l.id) : tipFound(latest, l), ev); });
+      g.addEventListener('pointermove', ev => moveTip(ev));
+      g.addEventListener('pointerleave', () => { g.classList.remove('hover'); hideTip(); });
+    }
+    const lit = l.a.data.state === 'done' && l.status !== 'rejected';
+    const working = l.a.data.state === 'running' && l.status !== 'rejected';
+    const reach = l.kind === 'found' && sim.deciding.has(l.a.id) && l.b.data.state === 'proposed';
+    el.g.setAttribute('class', `link ${l.kind}${l.status ? ' ' + l.status : ''}${lit ? ' lit' : ''}${working ? ' working' : ''}${reach ? ' reach' : ''}`);
+    el.g.dataset.id = l.id;
+    layers.links.appendChild(el.g);
+  }
+  for (const [id, el] of sim.linkEls) if (!keep.has(id)) { el.g.remove(); sim.linkEls.delete(id); }
+}
+function makeWorkEl(v) {
+  const g = svgEl('g');
+  g.dataset.id = v.id;
+  g.innerHTML = `<circle class="halo"/><circle class="hit"/><circle class="core"/><circle class="sat" r="3"/><text></text><text class="agent"></text>`;
+  layers.nodes.appendChild(g);
+  wire(g, v);
+  return g;
+}
+const labelY = v => v.r + 15;
+// How many characters a label may take follows the column spacing: about a tenth of it (28
+// at 290, 44 at 460), never under 28. A cut lands on a word, not inside one.
+const labelLimit = () => Math.max(28, Math.round((sim.colw || COLW_MIN) / 10.5));
+function updateWorkEl(v, d, first) {
+  const n = v.data, r = v.r, limit = labelLimit();
+  const cls = `node ${n.state}${sim.deciding.has(n.id) ? ' deciding' : ''}${v.parked ? ' frontier' : ''}`;
+  const active = n.attempts.find(a => a.state === 'running') ?? n.attempts.at(-1);
+  const sig = JSON.stringify([cls, n.label, n.what, r, limit, active?.agent]);
+  if (v.sig === sig) return;
+  v.sig = sig;
+  const g = v.el;
+  // Finished blooms once: a single soft expansion of the halo, then the steady glow.
+  const bloom = !first && !STILL && v.state && v.state !== 'done' && n.state === 'done';
+  v.state = n.state;
+  g.setAttribute('class', cls);
+  g.setAttribute('aria-label', `${n.label || n.what || n.id}, ${word(n.state)}`);
+  g.querySelector('.core').setAttribute('r', r.toFixed(1));
+  g.querySelector('.halo').setAttribute('r', (r * 1.3).toFixed(1));
+  g.querySelector('.hit').setAttribute('r', Math.max(r + 6, 14));
+  const t = g.querySelector('text:not(.agent)');
+  t.textContent = clipWords(n.label || n.what, limit);
+  t.setAttribute('y', labelY(v));
+  const badge = g.querySelector('.agent');
+  badge.textContent = active?.agent ?? '';
+  badge.setAttribute('y', -r - 7);
+  v.lw = 0;
+  if (bloom) {
+    const halo = g.querySelector('.halo');
+    g.classList.add('bloom');
+    halo.addEventListener('animationend', () => g.classList.remove('bloom'), { once: true });
+    setTimeout(() => g.classList.remove('bloom'), 1200);
+  }
+}
+
+/* Layout. Rank is the column: the longest path in from a source, over dependency edges plus
+   finder-to-found where that does not run against a dependency path. Each connected family
+   stacks its columns centred on its own middle; families stack top to bottom, biggest first.
+   Jobs with no edge, no run and no finder are the frontier: one column past the deepest rank.
+   The room sets the column spacing: the mapped columns spread so the last one sits three
+   quarters across and the frontier near the right edge, with the same margin each side. Edges
+   get longer with the room; reach is meant to read across all of it. */
+const COLW_MIN = 290, COLW_MAX = 460, ROWH = 58, FAMGAP = 30, FRONTROW = 30, MARGIN = 24;
+// The room is everything under the top line, rail or no rail, so opening the rail does not
+// reseat the columns. In the list view the canvas has no size; the wrap around it does.
+function roomSize() {
+  const r = document.getElementById('wrap').getBoundingClientRect();
+  return { w: r.width || innerWidth || 1440, h: r.height || Math.max(300, innerHeight - 50) };
+}
+function relayout() {
+  sim.bandLabels = [];
+  const nodes = [...sim.work.values()];
+  if (!nodes.length) return;
+  const out = new Map(nodes.map(v => [v.id, []])), inn = new Map(nodes.map(v => [v.id, []]));
+  const add = (a, b) => { out.get(a).push(b); inn.get(b).push(a); };
+  for (const l of sim.links) if (l.kind === 'dep' && l.status !== 'rejected') add(l.a.id, l.b.id);
+  const reaches = (from, to) => {
+    const seen = new Set([from]), q = [from];
+    while (q.length) { const c = q.shift(); if (c === to) return true; for (const n of out.get(c)) if (!seen.has(n)) { seen.add(n); q.push(n); } }
+    return false;
+  };
+  for (const l of sim.links) if (l.kind === 'found') { l.back = reaches(l.b.id, l.a.id); if (!l.back) add(l.a.id, l.b.id); }
+  // Size before seating: a job is as big as what it opens, and a row is as tall as the biggest
+  // job in its column needs, so a 24px node's name never touches the node under it.
+  const memo = new Map();
+  const reach = (id, stack) => {
+    if (memo.has(id)) return memo.get(id);
+    if (stack.has(id)) return new Set();
+    stack.add(id);
+    const s = new Set();
+    for (const t of out.get(id)) { s.add(t); for (const x of reach(t, stack)) s.add(x); }
+    stack.delete(id);
+    memo.set(id, s);
+    return s;
+  };
+  const opens = new Map(nodes.map(v => [v.id, reach(v.id, new Set()).size])), most = Math.max(1, ...opens.values());
+  for (const v of nodes) v.r = R_MIN + (R_MAX - R_MIN) * opens.get(v.id) / most;
+  const rank = new Map(nodes.map(v => [v.id, 0]));
+  for (let i = 0; i < nodes.length; i++) {
+    let changed = false;
+    for (const v of nodes) for (const n of out.get(v.id)) if (rank.get(n) < rank.get(v.id) + 1) { rank.set(n, rank.get(v.id) + 1); changed = true; }
+    if (!changed) break;
+  }
+  const isLive = v => out.get(v.id).length + inn.get(v.id).length > 0 || (v.data.attempts?.length ?? 0) > 0;
+  const parked = nodes.filter(v => !isLive(v));
+  const seen = new Set(), fams = [];
+  for (const v of nodes) {
+    if (seen.has(v.id) || !isLive(v)) continue;
+    const ms = [], q = [v.id]; seen.add(v.id);
+    while (q.length) {
+      const c = q.shift(); ms.push(sim.work.get(c));
+      for (const n of [...out.get(c), ...inn.get(c)]) if (!seen.has(n)) { seen.add(n); q.push(n); }
+    }
+    fams.push(ms);
+  }
+  fams.sort((a, b) => b.length - a.length);
+  // Column spacing comes from the room: the mapped columns spread from the left margin so the
+  // deepest one sits three quarters across (at the right margin when there is no frontier) and
+  // the frontier near the right edge, the same margin each side. One spacing for every family,
+  // so a column is the same moment in time all the way down. Never tighter than COLW_MIN, so
+  // labels keep their room and fit scales the board down instead.
+  const room = roomSize();
+  const maxRank = Math.max(0, ...fams.flat().map(v => rank.get(v.id)));
+  const x0 = MARGIN + BOXW / 2;
+  const xEnd = parked.length ? room.w * 0.75 : room.w - MARGIN - BOXW / 2;
+  // One column with no rank gets the spacing the room would give it, so its title has the room's
+  // width to read in; nothing else is placed by colw until there is a second column.
+  const colw = Math.min(COLW_MAX, Math.max(COLW_MIN, (xEnd - x0) / Math.max(1, maxRank)));
+  sim.colw = colw;
+  let y0 = 0;
+  for (const ms of fams) {
+    const cols = new Map();
+    for (const v of ms) { const c = rank.get(v.id); if (!cols.has(c)) cols.set(c, []); cols.get(c).push(v); }
+    const idx = new Map();
+    for (const [, list] of cols) list.forEach((v, i) => idx.set(v.id, i));
+    const median = (v, side) => {
+      const ps = (side === 'in' ? inn : out).get(v.id).map(n => idx.get(n)).filter(x => x !== undefined).sort((a, b) => a - b);
+      return ps.length ? ps[(ps.length - 1) >> 1] : idx.get(v.id);
+    };
+    for (let pass = 0; pass < 6; pass++) {
+      const keys = [...cols.keys()].sort((a, b) => (pass % 2 ? b - a : a - b));
+      const side = pass % 2 ? 'out' : 'in';
+      for (const c of keys) {
+        const list = cols.get(c);
+        const key = new Map(list.map(v => [v.id, median(v, side)]));
+        list.sort((x, y) => (key.get(x.id) - key.get(y.id)) || (idx.get(x.id) - idx.get(y.id)));
+        list.forEach((v, i) => idx.set(v.id, i));
+      }
+    }
+    // A column is as tall as its boxes: the top of the first job's node to the bottom of the
+    // last job's name, and a big job's name must clear the job under it, so two hubs stacked
+    // in one column sit a little further apart than ROWH.
+    const gap = (a, b) => Math.max(ROWH, boxBot(a) + boxTop(b));
+    const colH = list => list.reduce((s, v, i) => s + (i ? gap(list[i - 1], v) : 0), boxTop(list[0]) + boxBot(list[list.length - 1]));
+    const h = Math.max(ROWH, ...[...cols.values()].map(colH));
+    for (const [c, list] of cols) {
+      let y = y0 + (h - colH(list)) / 2 + boxTop(list[0]);
+      list.forEach((v, i) => { if (i) y += gap(list[i - 1], v); v.tx = x0 + c * colw; v.ty = y; v.parked = false; });
+    }
+    // The family is named by the job that was asked for: the one no run found.
+    const asked = ms.filter(v => !(v.data.foundBy ?? []).length);
+    const head = (asked.length ? asked : ms).reduce((a, b) => (b.r > a.r ? b : a));
+    const left = Math.min(...ms.map(v => v.tx)), right = Math.max(...ms.map(v => v.tx));
+    sim.bandLabels.push({ x: left, y: y0 + h + FAMGAP / 2 + 4, text: clipWords(head.data.label || head.data.what, 44), n: ms.length, w: right - left, h });
+    y0 += h + FAMGAP;
+  }
+  const total = Math.max(0, y0 - FAMGAP);
+  parked.sort((a, b) => (a.data.label ?? a.id).localeCompare(b.data.label ?? b.id));
+  // The frontier sits at the right margin when the mapped columns reach the room. A board too
+  // small to spread (spacing capped at COLW_MAX) keeps its frontier one half-column past the
+  // deepest job, so a few jobs and what waits beyond them stay one picture that fit can bring up.
+  const spread = maxRank > 0 && (xEnd - x0) / maxRank <= COLW_MAX;
+  const past = x0 + maxRank * colw + COLW_MIN / 2;
+  const fx = spread ? Math.max(past, room.w - MARGIN - R_FRONT - 4) : past, fh = Math.max(0, parked.length - 1) * FRONTROW;
+  parked.forEach((v, i) => { v.tx = fx; v.ty = total / 2 - fh / 2 + i * FRONTROW; v.parked = true; v.r = R_FRONT; });
+  drawBandLabels();
+}
+// A family's name sits under its last row and shows only while the pointer rests on the family.
+function drawBandLabels() {
+  const L = layers.bands;
+  while (L.firstChild) L.removeChild(L.firstChild);
+  for (const b of sim.bandLabels) {
+    const g = svgEl('g'), r = svgEl('rect'), t = svgEl('text');
+    g.setAttribute('class', 'band');
+    r.setAttribute('x', b.x - BOXW / 2 - 20); r.setAttribute('y', b.y - b.h - FAMGAP / 2 - 4);
+    r.setAttribute('width', b.w + BOXW + 40); r.setAttribute('height', b.h + FAMGAP / 2 + 10);
+    t.setAttribute('x', b.x - BOXW / 2 - 20); t.setAttribute('y', b.y);
+    t.textContent = `${b.text}  ·  ${b.n} job${b.n === 1 ? '' : 's'}`;
+    g.appendChild(r); g.appendChild(t);
+    L.appendChild(g);
+  }
+}
+// Every job eases to the seat the layout gave it. That is the only motion with nothing behind
+// it but time; the breath and the pulse belong to the job an agent is working on. The camera
+// eases at the same rate (EASE), so a job on its way to a new seat never leaves the frame.
+const EASE = 0.14;
+// How far fit may zoom in. A few jobs in a wide room read as dots at 100%; 160% keeps their
+// labels legible. A board that fills the room never gets near it.
+const FIT_MAX = 1.6;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+// A point on the cubic that pathOf draws between two seats, for a job travelling it.
+function curveAt(x1, y1, x2, y2, t) {
+  const c = Math.abs(x2 - x1) < 60 ? 0 : (x2 - x1) * 0.5;
+  const cx1 = x1 + c, cx2 = x2 - c, u = 1 - t;
+  return { x: u * u * u * x1 + 3 * u * u * t * cx1 + 3 * u * t * t * cx2 + t * t * t * x2,
+           y: u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2 };
+}
+// How far along its growth a job is: 1 once it has settled.
+function grown(v) {
+  if (!v.born) return 1;
+  const t = (performance.now() - v.born) / GROW_MS;
+  if (t >= 1) { v.born = 0; return 1; }
+  return easeOut(t);
+}
+function step() {
+  for (const v of sim.work.values()) {
+    if (v.fixed || v.tx === undefined) continue;
+    if (v.born) {
+      // Growing out of its finder: along the curve from where the finder is now, small to its size.
+      const t = grown(v);
+      if (t < 1) { const f = v.from, p = curveAt(f.x, f.y, v.tx, v.ty, t); v.x = p.x; v.y = p.y; continue; }
+    }
+    v.x += (v.tx - v.x) * EASE;
+    v.y += (v.ty - v.y) * EASE;
+  }
+  sim.t = performance.now() / 1000;
+}
+// No two labels may overlap, ever. A job is the box its name takes up under it; a family
+// heading is a fixed obstacle even though it only shows on hover.
+const BOXW = 208, BOXH = 56;
+// The box a job really takes, top to bottom: BOXH for a small job; a big job reaches from the
+// top of its node to the bottom of its name. `boxOf` gives the box's centre and height.
+const boxTop = v => Math.max(BOXH / 2, v.r + 3), boxBot = v => Math.max(BOXH / 2, labelY(v) + 5);
+const boxOf = v => ({ cy: v.y + (boxBot(v) - boxTop(v)) / 2, h: boxTop(v) + boxBot(v) });
+// Half the box a job's name really takes: BOXW holds 28 characters; a longer title, allowed
+// where the columns are wider, measures its own width once. A title in a hidden canvas
+// measures 0 and is measured again the next time it is asked for.
+function labelHalf(v) {
+  if (!(v.lw > 0)) { try { v.lw = v.el.querySelector('text').getComputedTextLength(); } catch { v.lw = 0; } }
+  return Math.max(BOXW, (v.lw || 0) + 12) / 2;
+}
+// The heading's box, as drawBandLabels draws it: left-aligned monospace at
+// (b.x - BOXW/2 - 20, b.y), one line of `text · N jobs`. 10px a character is generous on
+// purpose: an over-estimate keeps labels clear, an under-estimate lets them touch.
+function headingRect(b) {
+  const s = `${b.text ?? ''}  ·  ${b.n ?? 0} job${(b.n ?? 0) === 1 ? '' : 's'}`;
+  const x = b.x - BOXW / 2 - 20;
+  return { x0: x, x1: x + s.length * 10, y0: b.y - 18, y1: b.y + 6 };
+}
+function pushOutOf(x, y, w, h, r) {
+  const ox = Math.min(x + w / 2, r.x1) - Math.max(x - w / 2, r.x0);
+  const oy = Math.min(y + h / 2, r.y1) - Math.max(y - h / 2, r.y0);
+  if (ox <= 0 || oy <= 0) return null;
+  if (ox < oy) return { dx: (x < (r.x0 + r.x1) / 2 ? -(ox + 1) : ox + 1), dy: 0 };
+  return { dx: 0, dy: (y < (r.y0 + r.y1) / 2 ? -(oy + 1) : oy + 1) };
+}
+function separateOnce() {
+  let moved = 0;
+  // Seats never overlap by construction (ROWH > BOXH, columns > BOXW), so a job still on its
+  // way to one is left alone: pushing it mid-flight only throws it off the screen.
+  const settled = v => v.tx === undefined || Math.hypot(v.tx - v.x, v.ty - v.y) < 24;
+  const jobs = [...sim.work.values()].filter(v => v.inView !== false && !v.fixed && !v.parked && settled(v));
+  for (let i = 0; i < jobs.length; i++) for (let j = i + 1; j < jobs.length; j++) {
+    const p = jobs[i], q = jobs[j];
+    // Two jobs keep their boxes apart; a big job's box is taller than BOXH.
+    const bp = boxOf(p), bq = boxOf(q), bh = (bp.h + bq.h) / 2;
+    let dx = q.x - p.x, dy = bq.cy - bp.cy;
+    if (dx === 0 && dy === 0) { dx = 0.7; dy = 0.7; }
+    const ox = BOXW - Math.abs(dx), oy = bh - Math.abs(dy);
+    if (ox <= 0 || oy <= 0) continue;
+    moved++;
+    if (ox / BOXW < oy / bh) { const push = (ox / 2 + 0.5) * (dx < 0 ? -1 : 1); p.x -= push; q.x += push; }
+    else { const push = (oy / 2 + 0.5) * (dy < 0 ? -1 : 1); p.y -= push; q.y += push; }
+  }
+  if (sim.bandLabels.length) {
+    const heads = sim.bandLabels.map(headingRect);
+    for (const v of jobs) for (const h of heads) {
+      const push = pushOutOf(v.x, v.y, BOXW, BOXH, h) || pushOutOf(v.x, boxOf(v).cy, BOXW, boxOf(v).h, h);
+      if (!push) continue;
+      moved++;
+      v.x += push.dx; v.y += push.dy;
+    }
+  }
+  return moved;
+}
+function separate() { for (let i = 0; i < 40; i++) if (separateOnce() === 0) return; }
+// Left to right, leaving and arriving level, so a fan out of one job reads as a fan. `frac`
+// under 1 draws only the first part of the curve, for an edge still drawing itself in.
+function pathOf(l, frac = 1) {
+  const a = l.a, b = l.b;
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(1, Math.hypot(dx, dy)), ux = dx / d, uy = dy / d;
+  let P;
+  if (dx < 60) {
+    const x1 = a.x + ux * (a.r + 2), y1 = a.y + uy * (a.r + 2), x2 = b.x - ux * (b.r + 2), y2 = b.y - uy * (b.r + 2);
+    P = [x1, y1, x1 + (x2 - x1) / 3, y1 + (y2 - y1) / 3, x1 + (x2 - x1) * 2 / 3, y1 + (y2 - y1) * 2 / 3, x2, y2];
+  } else {
+    const x1 = a.x + a.r + 2, x2 = b.x - b.r - 2, c = (x2 - x1) * 0.5;
+    P = [x1, a.y, x1 + c, a.y, x2 - c, b.y, x2, b.y];
+  }
+  if (frac < 1) {
+    // de Casteljau: the first `frac` of the cubic is itself a cubic.
+    const t = Math.max(0.001, frac), m = (p, q) => p + (q - p) * t;
+    const [x0, y0, x1, y1, x2, y2, x3, y3] = P;
+    const ax = m(x0, x1), ay = m(y0, y1), bx = m(x1, x2), by = m(y1, y2), cx = m(x2, x3), cy = m(y2, y3);
+    const abx = m(ax, bx), aby = m(ay, by), bcx = m(bx, cx), bcy = m(by, cy);
+    P = [x0, y0, ax, ay, abx, aby, m(abx, bcx), m(aby, bcy)];
+  }
+  const f = n => n.toFixed(1);
+  return `M${f(P[0])} ${f(P[1])} C${f(P[2])} ${f(P[3])}, ${f(P[4])} ${f(P[5])}, ${f(P[6])} ${f(P[7])}`;
+}
+function draw() {
+  const now = performance.now();
+  for (const v of sim.work.values()) {
+    v.el.setAttribute('transform', `translate(${v.x.toFixed(1)},${v.y.toFixed(1)})`);
+    // A job crossing the room to a new seat carries no name until it is nearly there, so the
+    // name never sweeps through another.
+    const flying = !v.fixed && v.tx !== undefined && Math.hypot(v.tx - v.x, v.ty - v.y) > 40;
+    if (flying !== !!v.flying) { v.flying = flying; v.el.classList.toggle('flying', flying); }
+    // A job still growing out of its finder is drawn small, and reaches its size as it seats.
+    if (v.born) {
+      const s = 0.3 + 0.7 * grown(v);
+      v.el.classList.add('growing');
+      v.el.querySelector('.core').setAttribute('r', (v.r * s).toFixed(1));
+      v.el.querySelector('.halo').setAttribute('r', (v.r * s * 1.3).toFixed(1));
+      v.scaled = true;
+    } else if (v.scaled) {
+      v.scaled = false;
+      v.el.querySelector('.core').setAttribute('r', v.r.toFixed(1));
+      v.el.querySelector('.halo').setAttribute('r', (v.r * 1.3).toFixed(1));
+      v.el.classList.remove('growing');
+    }
+    // The satellite: one small light going round a job an agent is working on.
+    if (v.data?.state === 'running') {
+      const ang = STILL || reducedMotion.matches ? -0.9 : sim.t * 2.2;
+      const orbit = v.r + 8, sat = v.el.querySelector('.sat');
+      sat.setAttribute('cx', (Math.cos(ang) * orbit).toFixed(1)); sat.setAttribute('cy', (Math.sin(ang) * orbit).toFixed(1));
+    }
+  }
+  for (const l of sim.links) {
+    const el = sim.linkEls.get(l.id); if (!el) continue;
+    // An edge between two seated jobs draws itself in over GROW_MS; an edge on a job still
+    // growing out of its finder follows the job, so it draws in behind it.
+    let frac = 1;
+    if (el.born) {
+      const t = (now - el.born) / GROW_MS;
+      if (t >= 1 || l.a.born || l.b.born) { if (t >= 1) el.born = 0; }
+      else frac = easeOut(t);
+    }
+    const p = pathOf(l, frac);
+    el.vis.setAttribute('d', p); el.hit.setAttribute('d', p);
+  }
+  drawPulses();
+}
+// One pulse out of each working job, down the edges toward what it would unlock.
+function drawPulses() {
+  const L = layers.pulses, want = [];
+  if (!reducedMotion.matches) {
+    let i = 0;
+    for (const v of sim.work.values()) {
+      if (v.data.state !== 'running' || v.inView === false) continue;
+      const phase = STILL ? 0.45 : ((sim.t / PULSE_S) + i * 0.37) % 1;
+      i++;
+      for (const l of sim.links) if (l.a === v && l.kind === 'dep' && l.status !== 'rejected' && l.b.inView !== false) want.push({ l, phase });
+    }
+  }
+  while (L.childNodes.length > want.length) L.lastChild.remove();
+  while (L.childNodes.length < want.length) { const c = svgEl('circle'); c.setAttribute('class', 'pulse'); c.setAttribute('r', 3.5); L.appendChild(c); }
+  want.forEach(({ l, phase }, i) => {
+    const el = sim.linkEls.get(l.id), c = L.childNodes[i];
+    if (!el) return;
+    try {
+      const len = el.vis.getTotalLength(), p = el.vis.getPointAtLength(len * phase);
+      c.setAttribute('cx', p.x.toFixed(1)); c.setAttribute('cy', p.y.toFixed(1));
+      c.setAttribute('opacity', (Math.sin(Math.PI * phase) * 0.9).toFixed(2));
+    } catch { c.setAttribute('opacity', 0); }
+  });
+}
+// Selecting a job shows its family and takes the rest off the screen. Esc brings it back.
+// On a phone the graph opens already narrowed to the family that needs the person: the first
+// decision, else the first job an agent is working on, else the job that opens the most. That
+// is `focus`: the same narrowing as a selection, rail closed, and the camera frames the focus
+// and what it touches at a size that can be read; the rest of the family is a drag away.
+// `fit` shows the whole board (focus null); `clear` returns to the family. A desk never sets it.
+const phone = matchMedia('(max-width:760px)');
+let focus;                       // undefined: not chosen yet; null: whole board; else a job id
+function pickFocus(d) {
+  const first = needsRows(d).map(r => r.id).find(id => sim.work.has(id) && !sim.work.get(id).parked);
+  if (first) return first;
+  const working = d.nodes.find(n => n.state === 'running' && sim.work.has(n.id));
+  if (working) return working.id;
+  const hub = [...sim.work.values()].filter(v => !v.parked).reduce((a, b) => (!a || b.r > a.r ? b : a), null);
+  return hub ? hub.id : null;
+}
+function focusIfPhone(d) {
+  if (!phone.matches) { focus = undefined; return; }
+  if (focus === undefined || (focus && !sim.work.has(focus))) focus = pickFocus(d);
+}
+function fitAll() { focus = phone.matches ? null : undefined; applySelection(); world.fit(); if (STILL) frame(); }
+function clearAll() { select(null); if (phone.matches && latest) focus = pickFocus(latest); applySelection(); world.fit(); if (STILL) frame(); }
+// What the camera frames: on a phone with a focus and nothing selected, the focus and its
+// direct neighbours; otherwise everything on the board.
+function framed() {
+  const vs = [...sim.work.values()].filter(v => v.inView !== false);
+  if (!phone.matches || selected || !focus || !sim.work.has(focus)) return vs;
+  const near = new Set([focus]);
+  for (const l of sim.links) if (l.status !== 'rejected') { if (l.a.id === focus) near.add(l.b.id); if (l.b.id === focus) near.add(l.a.id); }
+  return vs.filter(v => near.has(v.id));
+}
+function clusterOf(id) {
+  const seen = new Set([id]);
+  const queue = [id];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const l of sim.links) {
+      if (l.status === 'rejected') continue;
+      for (const [x, y] of [[l.a.id, l.b.id], [l.b.id, l.a.id]]) if (x === cur && !seen.has(y)) { seen.add(y); queue.push(y); }
+    }
+  }
+  return seen;
+}
+function applySelection() {
+  const d = latest; if (!d) return;
+  const centre = selected && sim.work.has(selected) ? selected : focus && sim.work.has(focus) ? focus : null;
+  const inView = centre ? clusterOf(centre) : null;
+  const hot = new Set();
+  if (selected) for (const l of sim.links) if (l.a.id === selected || l.b.id === selected) { hot.add(l.a.id); hot.add(l.b.id); }
+  // The frontier stays on the board; it leaves only when one family is being looked at.
+  const shown = id => { const v = sim.work.get(id); return !!v && (!inView || inView.has(id)); };
+  for (const v of sim.work.values()) {
+    const s = shown(v.id);
+    v.el.classList.toggle('gone', !s);
+    v.el.classList.toggle('sel', v.id === selected);
+    v.el.classList.toggle('hot', !!selected && v.id !== selected && hot.has(v.id));
+    v.inView = s;
+  }
+  for (const l of sim.links) {
+    const el = sim.linkEls.get(l.id); if (!el) continue;
+    el.g.classList.toggle('gone', !(shown(l.a.id) && shown(l.b.id)));
+    el.g.classList.toggle('hot', !!selected && (l.a.id === selected || l.b.id === selected));
+  }
+  world.moved = false;
+}
+const world = {
+  el: document.getElementById('world'), svg: document.getElementById('svg'), x: 0, y: 0, k: 1, moved: false, dragged: false,
+  apply() {
+    this.el.setAttribute('transform', `translate(${this.x.toFixed(1)},${this.y.toFixed(1)}) scale(${this.k.toFixed(3)})`);
+    document.getElementById('zoom').textContent = Math.round(this.k * 100) + '%';
+  },
+  // The whole mapped board, at 100% when the room allows it, up to FIT_MAX when the board is a
+  // handful of jobs in a big room, so a row of three is not a row of dots. On a phone with a
+  // focus, the focus and what it touches. Framed on where each job is going, not where it is,
+  // so the camera heads straight for the final picture and a job crossing the room stays in it.
+  target() {
+    const vs = framed();
+    if (!vs.length) return null;
+    const px = v => (v.fixed || v.tx === undefined ? v.x : v.tx), py = v => (v.fixed || v.ty === undefined ? v.y : v.ty);
+    const half = v => v.parked ? v.r + 4 : labelHalf(v);
+    const x0 = Math.min(...vs.map(v => px(v) - half(v))), x1 = Math.max(...vs.map(v => px(v) + half(v)));
+    const y0 = Math.min(...vs.map(v => py(v) - v.r - 10)), y1 = Math.max(...vs.map(v => py(v) + (v.parked ? v.r + 10 : labelY(v) + 6)));
+    const r = this.svg.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    // The fitted graph starts below the zoom bar, so nothing sits under it.
+    const hud = document.getElementById('hud'), top = hud ? hud.offsetTop + hud.offsetHeight + 12 : 20;
+    const k = Math.max(0.15, Math.min((r.width - 48) / (x1 - x0), (r.height - top - 24) / (y1 - y0), FIT_MAX));
+    return { k, x: (r.width - (x1 + x0) * k) / 2, y: top + (r.height - top - 24 - (y1 - y0) * k) / 2 - y0 * k };
+  },
+  follow(rate) { const t = this.target(); if (!t) return; this.k += (t.k - this.k) * rate; this.x += (t.x - this.x) * rate; this.y += (t.y - this.y) * rate; this.apply(); },
+  fit() { this.moved = false; this.follow(1); },
+  toWorld(ev) { const r = this.svg.getBoundingClientRect(); return { x: (ev.clientX - r.left - this.x) / this.k, y: (ev.clientY - r.top - this.y) / this.k }; },
+};
+let drag = null;
+function wire(g, v) {
+  g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button');
+  g.addEventListener('keydown', ev => {
+    if (!['Enter', ' '].includes(ev.key)) return;
+    ev.preventDefault();
+    select(v.id === selected ? null : v.id);
+  });
+  g.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    ev.stopPropagation();
+    const p = world.toWorld(ev);
+    drag = { v, sx: ev.clientX, sy: ev.clientY, lx: p.x, ly: p.y, moved: false };
+    v.fixed = true;
+    world.svg.setPointerCapture(ev.pointerId);
+  });
+  g.addEventListener('pointerenter', ev => { if (drag) return; hoverEdges(v.id, true); showTip(tipNode(latest, v.id), ev); });
+  g.addEventListener('pointermove', ev => { if (!drag) moveTip(ev); });
+  g.addEventListener('pointerleave', () => { hoverEdges(v.id, false); hideTip(); });
+}
+(() => {
+  const svg = world.svg, canvas = document.getElementById('canvas');
+  let pan = null;
+  svg.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0 || drag) return;
+    pan = { px: ev.clientX, py: ev.clientY, x: world.x, y: world.y };
+    world.dragged = false;
+    svg.setPointerCapture(ev.pointerId);
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (drag) {
+      const p = world.toWorld(ev);
+      if (!drag.moved && Math.hypot(ev.clientX - drag.sx, ev.clientY - drag.sy) > 3) { drag.moved = true; hideTip(); canvas.classList.add('dragging'); }
+      drag.v.x = p.x; drag.v.y = p.y;
+      return;
+    }
+    if (!pan) return;
+    const dx = ev.clientX - pan.px, dy = ev.clientY - pan.py;
+    if (!world.dragged && Math.hypot(dx, dy) < 4) return;
+    world.dragged = true; world.moved = true;
+    canvas.classList.add('dragging');
+    world.x = pan.x + dx; world.y = pan.y + dy;
+    world.apply();
+  });
+  const up = () => {
+    canvas.classList.remove('dragging');
+    if (drag) {
+      const v = drag.v; v.fixed = false;
+      if (!drag.moved) select(v.id === selected ? null : v.id);
+      drag = null;
+      return;
+    }
+    if (pan && !world.dragged && selected) select(null);
+    pan = null;
+  };
+  svg.addEventListener('pointerup', up);
+  svg.addEventListener('pointercancel', up);
+  svg.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const r = svg.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    const k = Math.min(3, Math.max(0.15, world.k * Math.exp(-ev.deltaY * 0.0015)));
+    world.x = px - (px - world.x) * (k / world.k);
+    world.y = py - (py - world.y) * (k / world.k);
+    world.k = k; world.moved = true;
+    world.apply();
+  }, { passive: false });
+  svg.addEventListener('dblclick', ev => { if (!ev.target.closest('.node')) fitAll(); });
+  document.getElementById('fit').onclick = () => fitAll();
+  const zoomBy = factor => {
+    const r = svg.getBoundingClientRect(), px = r.width / 2, py = r.height / 2;
+    const k = Math.min(3, Math.max(.15, world.k * factor));
+    world.x = px - (px - world.x) * k / world.k;
+    world.y = py - (py - world.y) * k / world.k;
+    world.k = k; world.moved = true; world.apply();
+  };
+  document.getElementById('zoom-in').onclick = () => zoomBy(1.25);
+  document.getElementById('zoom-out').onclick = () => zoomBy(.8);
+  document.getElementById('clear').onclick = () => clearAll();
+  new ResizeObserver(() => { if (!world.moved) world.follow(1); }).observe(canvas);
+  // The columns are spaced for the room, so a new width reseats them.
+  let roomW = roomSize().w;
+  new ResizeObserver(() => {
+    const w = roomSize().w;
+    if (Math.abs(w - roomW) < 2 || !latest || !sim.work.size) return;
+    roomW = w; relayout(); for (const v of sim.work.values()) updateWorkEl(v, latest); applySelection(); if (STILL) frame();
+  }).observe(document.getElementById('wrap'));
+  // Crossing the phone line picks the focus or drops it.
+  phone.addEventListener('change', () => { focus = undefined; if (latest) { focusIfPhone(latest); applySelection(); world.moved = false; } });
+})();
+function hoverEdges(id, on) {
+  for (const l of sim.links) if (l.a.id === id || l.b.id === id) sim.linkEls.get(l.id)?.g.classList.toggle('hover', on);
+}
+const tip = document.getElementById('tip');
+function showTip(html, ev) { if (!html) return; tip.innerHTML = html; tip.style.display = 'block'; moveTip(ev); }
+function hideTip() { tip.style.display = 'none'; }
+function moveTip(ev) {
+  const r = document.getElementById('canvas').getBoundingClientRect();
+  let x = ev.clientX - r.left + 16, y = ev.clientY - r.top + 16;
+  if (x + tip.offsetWidth > r.width - 8) x = ev.clientX - r.left - tip.offsetWidth - 12;
+  if (y + tip.offsetHeight > r.height - 8) y = ev.clientY - r.top - tip.offsetHeight - 12;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+function tipNode(d, id) {
+  const n = d?.nodes.find(x => x.id === id); if (!n) return '';
+  const state = n.state === 'ready' && d.mapping && n.nextKind === 'map' ? 'not mapped yet' : word(n.state);
+  return `<b>${esc(n.label || n.id)}</b> · ${esc(state)}<div>${esc(n.id)} · ${n.spent} of ${n.max} tries${n.needs.length ? ' · needs ' + n.needs.map(x => esc(nameOf(d, x))).join(', ') : ''}${n.leverage ? ` · unlocks ${n.leverage}` : ''}</div><div>${esc(clip(n.what, 200))}</div>`;
+}
+function tipEdge(d, id) {
+  const e = d?.edges.find(x => x.id === id); if (!e) return '';
+  const how = { proposed: 'suggested by an agent', confirmed: 'confirmed', authored: 'in the plan', rejected: 'declined' }[e.status] || e.status;
+  return `<b>${esc(nameOf(d, e.to))}</b> needs <b>${esc(nameOf(d, e.from))}</b> first · ${esc(how)}${e.why && e.status !== 'authored' ? `<div>${esc(e.why)}</div>` : ''}`;
+}
+function tipFound(d, l) {
+  if (!d) return '';
+  const by = (l.b.data.foundBy ?? []).join(', ');
+  return `<b>${esc(nameOf(d, l.b.id))}</b> came out of a run on <b>${esc(nameOf(d, l.a.id))}</b>${by ? ` · ${esc(by)}` : ''}`;
+}
+// `?still` settles once and stops the clock, for a screenshot or a headless check. `?audit`
+// with it writes every job-box/heading overlap into #audit as JSON for a browser to read back.
+function auditOverlaps() {
+  // A job's box is the room it really takes: the node from its top edge to the bottom of its
+  // name, as wide as the name.
+  const boxes = [...sim.work.values()].filter(v => v.inView !== false)
+    .map(v => v.parked ? { id: v.id, x0: v.x - v.r - 1, x1: v.x + v.r + 1, y0: v.y - v.r - 1, y1: v.y + v.r + 1 }
+      : { id: v.id, x0: v.x - labelHalf(v), x1: v.x + labelHalf(v), y0: v.y - boxTop(v), y1: v.y + boxBot(v) });
+  const heads = sim.bandLabels.map((b, i) => ({ id: `heading:${b.text ?? i}`, ...headingRect(b) }));
+  const all = boxes.concat(heads);
+  const hits = [];
+  for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+    const a = all[i], c = all[j];
+    if (Math.min(a.x1, c.x1) - Math.max(a.x0, c.x0) > 0 && Math.min(a.y1, c.y1) - Math.max(a.y0, c.y0) > 0) hits.push([a.id, c.id]);
+  }
+  let el = document.getElementById('audit');
+  if (!el) { el = document.createElement('div'); el.id = 'audit'; el.style.display = 'none'; document.body.appendChild(el); }
+  el.textContent = JSON.stringify({ jobs: boxes.length, headings: heads.length, overlaps: hits, zoom: Math.round(world.k * 100) });
+}
+function frame() {
+  if (sim.work.size && (view === 'graph' || STILL)) {
+    step();
+    separate();
+    draw();
+    if (!world.moved) world.follow(STILL ? 1 : EASE);
+  }
+  if (!STILL) requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+setView(view);
+document.body.classList.toggle('open', !!selected);
+tick();
+</script>

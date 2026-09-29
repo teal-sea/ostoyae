@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# The gate, rehearsed with the fake executor: zero model calls, a throwaway pursuit, a gate
+# command that is `true` for one declaration and `false` for another.
+#
+#   bin/rehearse-gate             prints one line per assertion, exits non-zero if any fails
+#
+#   1. an item whose statement fails the gate is never launched, and the run says so
+#   2. an item whose statement passes is launched as before
+#   3. the verdict is on the item, keyed to the claim, and a run does not gate it twice
+#   4. `--gate` judges the whole board, writes, and exits non-zero when anything fails
+#   5. exit 2 from the gate is "could not tell": recorded as unknown, still launchable
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-gate.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G="$T/gate.json"
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+# the gate: passes Good.*, cannot tell about Odd.*, fails everything else; and it proves it ran
+# in the trunk with the statement in hand by echoing both.
+gate = ('bash -c \'echo "gate saw: $OSTOYAE_STATEMENT in $PWD root=$OSTOYAE_ROOT_ITEM"; '
+        'case "{decl}" in Good.*) exit 0;; Odd.*) exit 2;; *) echo "error: {decl} does not elaborate"; exit 1;; esac\'')
+mk = lambda decl: {"id": "w-lemma-" + decl.lower().replace(".", "-"), "kind": "lemma",
+                   "claim": {"decl": decl, "statement": f"theorem {decl} : True := by sorry"},
+                   "what": f"Prove {decl}", "check": "true", "needs": []}
+g = {"graph": "rehearse-gate", "concurrency": 3, "max_attempts": 1,
+     "ontology": {"kinds": {"lemma": {"claim": ["decl", "statement"], "evidence": ["why"],
+                                      "id": "lemma-{decl}", "what": "Prove {decl}", "check": "true", "gate": gate}}},
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4960},
+     "work": [mk("Good.one"), mk("Bad.one"), mk("Odd.one")], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/gate.json", "w"), indent=2)
+PY
+
+echo "== a run"
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" > "$T/run.log" 2>&1; echo "  exit $?"
+assert "1. the item whose statement fails the gate was never launched, and the run said so" "
+import json;g=json.load(open('$G'))
+assert not [a for a in g['attempts'] if a['of']=='w-lemma-bad-one'], [a['of'] for a in g['attempts']]
+t=open('$T/run.log').read(); assert 'does not elaborate, not launched' in t, t[-600:]
+w=[x for x in g['work'] if x['id']=='w-lemma-bad-one'][0]
+assert w['gate']['state']=='fails' and 'does not elaborate' in ' '.join(w['gate']['error']), w['gate']"
+assert "2. the item whose statement passes launched and landed as before" "
+import json;g=json.load(open('$G'))
+a=[a for a in g['attempts'] if a['of']=='w-lemma-good-one']; assert len(a)==1 and a[0]['state']=='done', a
+w=[x for x in g['work'] if x['id']=='w-lemma-good-one'][0]; assert w['gate']['ok'] and w['gate']['hash']==w.get('claim_hash', w['gate']['hash'])"
+assert "3. the gate ran in the trunk worktree with the statement in hand" "
+import json;g=json.load(open('$G'))
+w=[x for x in g['work'] if x['id']=='w-lemma-bad-one'][0]; e=' '.join(w['gate']['error'])
+assert 'gate saw: theorem Bad.one' in e and '/_trunk' in e and 'root=' in e, e"
+assert "5. exit 2 is could-not-tell: recorded unknown, and the item still launched" "
+import json;g=json.load(open('$G'))
+w=[x for x in g['work'] if x['id']=='w-lemma-odd-one'][0]; assert w['gate']['state']=='unknown', w['gate']
+assert [a for a in g['attempts'] if a['of']=='w-lemma-odd-one'], 'not launched'"
+assert "4a. the report names the item that does not elaborate" "
+t=open('$T/run.log').read(); assert 'statement does not elaborate, never launched' in t, t[-900:]"
+assert "4d. the gated item is not also listed as ready to launch" "
+t=open('$T/run.log').read()
+assert 'ready      w-lemma-bad-one' not in t, t[-900:]
+assert '0 ready' in t, t[-900:]"
+
+echo "== --gate over the board"
+python3 -c "
+import json;g=json.load(open('$G'))
+for w in g['work']: w.pop('gate',None)
+g['work'].append({'id':'w-lemma-bad-two','kind':'lemma','claim':{'decl':'Bad.two','statement':'theorem Bad.two : True := by sorry'},'what':'Prove Bad.two','check':'true','needs':[]})
+json.dump(g,open('$G','w'),indent=2)"
+node run.mjs "$G" --gate > "$T/gate.log" 2>&1; rc=$?; echo "  --gate exit $rc"
+assert "4b. --gate judged every item, wrote the graph, and exited non-zero because something fails" "
+import json;g=json.load(open('$G'))
+st={w['id']:w.get('gate',{}).get('state') for w in g['work']}
+assert st=={'w-lemma-good-one':'ok','w-lemma-bad-one':'fails','w-lemma-odd-one':'unknown','w-lemma-bad-two':'fails'}, st
+assert $rc==1, $rc
+t=open('$T/gate.log').read(); assert '1 elaborate' in t and '2 do not' in t and '1 could not be judged' in t, t"
+assert "4c. and a second --gate skips what is already judged and unchanged" "
+import subprocess;o=subprocess.run(['node','run.mjs','$G','--gate'],capture_output=True,text=True).stdout
+assert '4 already gated, unchanged' in o, o"
+
+echo ""
+[ "$fails" = 0 ] && echo "  all assertions passed" || echo "  $fails assertion(s) failed"
+exit $((fails > 0))

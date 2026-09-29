@@ -1,0 +1,508 @@
+#!/usr/bin/env bash
+# The unverified executors (gemini.sh, aider.sh, opencode.sh, hermes.sh), plus muse.sh and grok.sh
+# (verified against three and four live runs on 2026-09-17 and 2026-09-18 respectively, still
+# contract-rehearsed), each rehearsed through the real runner with a stub CLI of its name on
+# PATH. Zero model calls, no network.
+# What it proves is that each adapter honours the executor contract; what it cannot prove is
+# that the flags mean to the real CLI what the docs say, and the header of each executor says
+# as much. The grok stub emits the real streaming-messages-json frame shapes captured from
+# grok 1.0.34 on 2026-09-18.
+#
+#   bin/rehearse-executors        prints one line per assertion, exits non-zero if any fails
+#
+# For each of gemini, aider, opencode, muse, grok, hermes, then usage edge cases:
+# all-zero usage (record shape, both spend caps, max_attempts counting) and .claude memory
+# withholding (loader cannot see it, agent work at those paths wins, prompt names it):
+#   1. a prove the stub finishes records `done`, and its file is on the attempt's branch
+#   2. the stub was invoked with the prompt text and the headless flags the docs name
+#   3. the git guard reached the CLI: the settings, policy or inline config the executor built
+#      names git as denied (aider: no-commit flags; Hermes: the prompt contract)
+#   4. usage.json was written and the runner recorded it on the attempt, with real numbers parsed
+#      from the stub's output in that CLI's own format
+#   5. the injected contract (AGENTS.md, CLAUDE.md) and .ostoyae/ are not on the branch,
+#      and the pursuit gitignores nothing, so the executor's enumeration filter alone is
+#      what keeps them off (demo.mjs gitignores .ostoyae/, which would mask a filter gap)
+#   6. a prove the stub walls records `walled`, with its partial work committed on the branch
+#      under a "walled, partial work:" subject
+#   7. doctor says `ok executor` with the stub on PATH and `bad` without it, and calls no model
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-executors.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+ran=0
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; python3 -c "$2" 2>&1 | tail -3 | sed 's/^/        /'; fi; }
+
+# The stubs. Each reads its args, appends them and the guard it was handed to $STUB_LOG, writes
+# <work>.txt into the worktree (its "work"), prints one reply in that CLI's real output format so
+# the executor's usage parser has something to parse, and, when STUB_WALL=1, writes a wall
+# handback that proposes work, which is what makes the runner record `walled` and not `failed`.
+# The muse stub also writes a fake session log under XDG_DATA_HOME (pointed at scratch here),
+# because that adapter reads usage out of the run session log.
+mkdir -p "$T/bin"
+cat > "$T/bin/stub-common" <<'EOF'
+{ printf 'argv:'; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
+mkdir -p .ostoyae
+printf 'stub work on %s\n' "$OSTOYAE_WORK" > "$OSTOYAE_WORK.txt"
+# Compiled Python, the way an interpreter would leave it, and what the cell was told about it.
+mkdir -p __pycache__ && printf 'bytecode' > __pycache__/stub.cpython-310.pyc && printf 'bytecode' > stray.pyc
+echo "pythondontwritebytecode: ${PYTHONDONTWRITEBYTECODE:-unset}" >> "$STUB_LOG"
+if [ "${STUB_WALL:-}" = 1 ]; then
+  cat > .ostoyae/report.json <<'JSON'
+{ "wall": "there is no shared parser to build on",
+  "work": [ { "id": "w-parser", "what": "Build the shared parser" } ],
+  "edges": [ { "from": "w-parser", "to": "w-hello", "why": "hello is written by the parser" } ] }
+JSON
+fi
+EOF
+cat > "$T/bin/gemini" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+{ echo "settings: \$(cat "\${GEMINI_CLI_SYSTEM_SETTINGS_PATH:-/dev/null}")"; echo "trust: \${GEMINI_CLI_TRUST_WORKSPACE:-}"; } >> "\$STUB_LOG"
+for ((i=1;i<=\$#;i++)); do [ "\${!i}" = --admin-policy ] && { j=\$((i+1)); echo "policy: \$(tr '\n' ' ' < "\${!j}")" >> "\$STUB_LOG"; }; done
+echo '{"type":"init","timestamp":"t","session_id":"s","model":"stub-model"}'
+echo '{"type":"message","timestamp":"t","role":"assistant","content":"writing the ","delta":true}'
+echo '{"type":"message","timestamp":"t","role":"assistant","content":"file now","delta":true}'
+echo '{"type":"tool_use","timestamp":"t","tool_name":"write_file","tool_id":"1","parameters":{"file_path":"w-hello.txt"}}'
+echo '{"type":"result","timestamp":"t","status":"success","stats":{"total_tokens":1450,"input_tokens":1400,"output_tokens":50,"cached":600,"input":800,"duration_ms":1234,"tool_calls":1,"models":{"stub-model":{"total_tokens":1450,"input_tokens":1400,"output_tokens":50,"cached":600,"input":800}}}}'
+EOF
+cat > "$T/bin/aider" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+mkdir -p .aider.tags.cache.v4 && echo x > .aider.tags.cache.v4/tags.sqlite
+echo "Aider v0.86.2 (stub)"
+echo "Added w-hello.txt to the chat."
+echo "Tokens: 4.2k sent, 1.1k cache hit, 340 received. Cost: \\\$0.01 message, \\\$0.01 session."
+echo "Tokens: 12k sent, 200 received. Cost: \\\$0.02 message, \\\$0.03 session."
+EOF
+cat > "$T/bin/opencode" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo "config: \${OPENCODE_CONFIG_CONTENT:-}" >> "\$STUB_LOG"
+echo '{"type":"step_start","timestamp":1,"sessionID":"s","part":{"type":"step-start"}}'
+echo '{"type":"tool_use","timestamp":1,"sessionID":"s","part":{"type":"tool","tool":"write","state":{"status":"completed","input":{"filePath":"w-hello.txt"}}}}'
+echo '{"type":"text","timestamp":1,"sessionID":"s","part":{"type":"text","text":"wrote the file"}}'
+echo '{"type":"step_finish","timestamp":1,"sessionID":"s","part":{"type":"step-finish","reason":"stop","cost":0.0025,"tokens":{"input":1000,"output":50,"reasoning":0,"cache":{"read":600,"write":0}}}}'
+EOF
+cat > "$T/bin/muse" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+for ((i=1;i<=\$#;i++)); do [ "\${!i}" = --prompt-file ] && { j=\$((i+1)); echo "prompt-file: \$(cat "\${!j}")" >> "\$STUB_LOG"; }; done
+[ -f AGENTS.md ] && [ -f CLAUDE.md ] && echo "contract: AGENTS.md present" >> "\$STUB_LOG"
+SID=00000000-0000-4000-8000-000000000007
+LOGDIR="\${XDG_DATA_HOME:-\$HOME/.local/share}/muse/sessions/\$(date +%Y/%m/%d)/\$SID"
+mkdir -p "\$LOGDIR"
+{ echo '{"schema_version":1,"id":"log-1","payload":{"event":{"kind":"model_completed","model":"muse-spark-1.3","usage":{"input_tokens":800,"output_tokens":50,"cached_tokens":600,"cache_write_tokens":0,"cache_read_tokens":0,"reasoning_tokens":10},"duration_ms":1234}}}';
+  echo '{"schema_version":1,"id":"log-2","payload":{"event":{"kind":"model_completed","model":"muse-spark-1.3","usage":{"input_tokens":900,"output_tokens":30,"cached_tokens":800,"cache_write_tokens":0,"cache_read_tokens":0,"reasoning_tokens":5},"duration_ms":500}}}'; } > "\$LOGDIR/session.jsonl"
+echo '{"schema_version":1,"id":"stub-1","stream":{"kind":"session","id":"00000000-0000-4000-8000-000000000007"},"payload_type":"run.model.configured","payload":{"kind":"run_model_configured","model_id":"muse-spark-1.3"}}'
+echo '{"schema_version":1,"id":"stub-2","stream":{"kind":"session","id":"00000000-0000-4000-8000-000000000007"},"payload_type":"tool.result","payload":{"kind":"tool_result","text":"wrote the file","edit_facts":{"tool_name":"write_file","path":"w-hello.txt"},"correlation_facts":{"tool_name":"write_file","outcome":"success"}}}'
+echo '{"schema_version":1,"id":"stub-3","stream":{"kind":"session","id":"00000000-0000-4000-8000-000000000007"},"payload_type":"run.output.delta","payload":{"kind":"run_output_delta","text":"writing the file now"}}'
+echo '{"schema_version":1,"id":"stub-4","stream":{"kind":"session","id":"00000000-0000-4000-8000-000000000007"},"payload_type":"task.lifecycle.started","payload":{"kind":"task_lifecycle","event":{"kind":"started"}}}'
+echo '{"schema_version":1,"id":"stub-5","stream":{"kind":"session","id":"00000000-0000-4000-8000-000000000007"},"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"wrote the file","reason":null}}'
+EOF
+cat > "$T/bin/grok" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+for ((i=1;i<=\$#;i++)); do [ "\${!i}" = --prompt-file ] && { j=\$((i+1)); echo "prompt-file: \$(cat "\${!j}")" >> "\$STUB_LOG"; }; done
+echo '{"type":"system","subtype":"init","session_id":"s","model":"grok-4.6","permissionMode":"bypassPermissions"}'
+echo '{"type":"assistant","message":{"role":"assistant","model":"grok-4.6","content":[{"type":"text","text":"wrote the file"}],"stop_reason":"end_turn","usage":{"input_tokens":20977,"output_tokens":35}}}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":56173,"duration_api_ms":54995,"num_turns":2,"result":"wrote the file","stop_reason":"end_turn","total_cost_usd":0.0144,"usage":{"input_tokens":20977,"output_tokens":35,"cache_read_input_tokens":640,"cache_creation_input_tokens":0},"modelUsage":{"grok-4.6":{"inputTokens":20977,"outputTokens":35,"costUSD":0.0144}},"session_id":"s"}'
+EOF
+cat > "$T/bin/hermes" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo "terminal: \${TERMINAL_ENV:-} \${TERMINAL_CWD:-}" >> "\$STUB_LOG"
+for ((i=1;i<=\$#;i++)); do [ "\${!i}" = --query-file ] && { j=\$((i+1)); echo "prompt-file: \$(cat "\${!j}")" >> "\$STUB_LOG"; }; done
+echo '{"type":"system","subtype":"init","model":"stub-hermes","session_id":"s"}'
+echo '{"type":"text","text":"writing the fi"}'
+echo '{"type":"text","text":"le now.\\nThat bl"}'
+echo '{"type":"text","text":"ocked me."}'
+echo '{"type":"tool_use","name":"file","input":{"path":"w-hello.txt"}}'
+echo '{"type":"tool_result","name":"file","output":"ok","duration_ms":3,"is_error":false}'
+echo '{"type":"result","session_id":"s","exit_code":0,"text":"done","tokens":{"input":1200,"output":55,"total":1255,"cache_read":400,"cache_write":20},"duration_ms":2345}'
+EOF
+chmod +x "$T/bin/gemini" "$T/bin/aider" "$T/bin/opencode" "$T/bin/muse" "$T/bin/grok" "$T/bin/hermes"
+cat > "$T/bin/claude" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo '{"type":"result","subtype":"success","usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"modelUsage":{"stub-model":{}},"total_cost_usd":0.01,"duration_ms":20,"duration_api_ms":10,"num_turns":1}'
+EOF
+cat > "$T/bin/codex" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":2}}'
+EOF
+chmod +x "$T/bin/claude" "$T/bin/codex"
+mkdir -p "$T/without-agent"
+NODE=$(command -v node)
+for tool in bash git python3 node; do ln -s "$(command -v "$tool")" "$T/without-agent/$tool"; done
+
+# A disposable pursuit with no .gitignore. demo.mjs gitignores .ostoyae/, but real pursuits
+# need not, and an ignored .ostoyae/ would let assertion 5 pass on the ignore rather than on
+# the executor's enumeration filter, which is what broke (2026-09-18: usage.json committed).
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && git config user.name r && git config user.email r@x \
+  && echo hello > README && git add -A && git commit -qm start)
+
+board() {  # $1 executor  $2 mode
+  python3 - "$T" "$1" "$2" <<'PY'
+import json, sys
+T, x, mode = sys.argv[1:]
+g = {"graph": f"rehearse-{x}-{mode}", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-{x}-{mode}", "base": "main",
+                 "env_passthrough": ["STUB_LOG", "STUB_WALL", "XDG_DATA_HOME"]},
+     "work": [{"id": "w-hello", "what": "Write hello into w-hello.txt", "check": "test -f w-hello.txt"}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/{x}-{mode}.json", "w"), indent=2)
+PY
+}
+
+for X in gemini aider opencode muse grok hermes; do
+  echo "== $X"
+  case $X in
+    gemini)   FLAGS="['-p', '--approval-mode', 'yolo', '--output-format', 'stream-json', '--admin-policy']"
+              GUARD="'run_shell_command(git)' in log and 'commandPrefix = \"git\"' in log and 'decision = \"deny\"' in log and 'trust: true' in log"
+              USAGE="u['output_tokens']==50 and u['input_tokens']==800 and u['cache_read_input_tokens']==600 and u['cost_usd'] is None and 'unreported' in u['cost_basis']";;
+    aider)    FLAGS="['--message', '--yes-always', '--no-auto-commits', '--no-dirty-commits', '--no-gitignore', '--no-suggest-shell-commands', '--read', 'AGENTS.md']"
+              GUARD="'--no-auto-commits' in log and '--no-dirty-commits' in log"
+              USAGE="u['input_tokens']==16200 and u['output_tokens']==540 and u['cache_read_input_tokens']==1100 and u['cost_usd']==0.03 and u['turns']==2";;
+    opencode) FLAGS="['run', '--format', 'json', '--auto']"
+              GUARD="'\"git *\": \"deny\"' in log and '\"git\": \"deny\"' in log"
+              USAGE="u['input_tokens']==1000 and u['output_tokens']==50 and u['cache_read_input_tokens']==600 and abs(u['cost_usd']-0.0025)<1e-9";;
+    muse)     FLAGS="['exec', '--json', '--disable-approval', '--trust-workspace', '--workspace', '--prompt-file', '--disable-web-tools']"
+              GUARD="'--trust-workspace' in log and '--workspace' in log and 'contract: AGENTS.md present' in log"
+              USAGE="u['output_tokens']==80 and u['input_tokens']==1700 and u['cache_read_input_tokens']==1400 and u['cost_usd'] is None and 'unreported' in u['cost_basis'] and u['turns']==2 and u['model']=='muse-spark-1.3' and u['reasoning_tokens']==15";;
+    hermes)   FLAGS="['chat', '--query-file', '--format', 'stream-json', '--yolo', '--source', 'tool', '--ignore-rules', '--in', '-t']"
+              GUARD="'prompt-file: # You are attempt ' in log and 'Do not run git at all' in log and 'terminal: local ' in log and '/wt-hermes-' in log and 'terminal\\\\,file\\\\,todo' in log"
+              USAGE="u['output_tokens']==55 and u['input_tokens']==1200 and u['cache_read_input_tokens']==400 and u['cache_creation_input_tokens']==20 and u['cost_usd'] is None and 'reports tokens, not cost' in u['cost_basis'] and u['turns']==1 and u['model']=='stub-hermes'";;
+    grok)     FLAGS="['--prompt-file', '--output-format', 'streaming-messages-json', '--trust', '--permission-mode', 'bypassPermissions', '--deny', '--disallowed-tools']"
+              GUARD="'--deny' in log and 'Bash' in log and 'git' in log and 'MCPTool' in log and 'ask_user_question' in log"
+              USAGE="u['output_tokens']==35 and u['input_tokens']==20977 and u['cache_read_input_tokens']==640 and abs(u['cost_usd']-0.0144)<1e-9 and u['cost_basis']=='reported' and u['turns']==2 and u['model']=='grok-4.6' and u['api_ms']==54995";;
+  esac
+
+  # done
+  board "$X" done
+  G="$T/$X-done.json"; LOG="$T/$X-done.log"; : > "$LOG"
+  XDG_DATA_HOME="$T/xdg" STUB_LOG="$LOG" PATH="$T/bin:$PATH" node run.mjs "$G" --exec "bash $OST/executors/$X.sh" --max-launches 1 > "$T/$X-done.run" 2>&1; echo "  run exit $?"
+  assert "1. $X: a prove the stub finished records done, and its file is on the branch" "
+import json, subprocess
+g = json.load(open('$G')); a = g['attempts']; assert len(a) == 1 and a[0]['state'] == 'done', [(x['state'], x.get('result')) for x in a]
+b = a[0]['sandbox']['branch']
+out = subprocess.run(['git', '-C', '$T/pursuit', 'show', b + ':w-hello.txt'], capture_output=True, text=True); assert out.returncode == 0 and 'stub work on w-hello' in out.stdout, out"
+  assert "2. $X: the stub was invoked with the prompt text and the documented headless flags" "
+log = open('$LOG').read()
+assert 'Write hello into w-hello.txt' in log or 'Write\\\\ hello\\\\ into\\\\ w-hello.txt' in log, log
+argv = [l for l in log.splitlines() if l.startswith('argv:')][0]
+for f in $FLAGS: assert f in argv, (f, argv)"
+  assert "2b. $X: absent effort adds no effort flag" "
+log=open('$LOG').read(); argv=[l for l in log.splitlines() if l.startswith('argv:')][0]
+assert '--reasoning-effort' not in argv and '--reasoning ' not in argv and '#high' not in argv, argv"
+  assert "3. $X: the git guard reached the CLI" "
+log = open('$LOG').read(); assert $GUARD, log"
+  assert "4. $X: usage.json was written from the stub's output and recorded on the attempt" "
+import json; g = json.load(open('$G')); u = g['attempts'][0]['result']['usage']
+assert u['executor'] == '$X' and isinstance(u['duration_ms'], int), u
+assert $USAGE, u"
+  assert "5. $X: the injected contract and .ostoyae/ are not on the branch" "
+import json, subprocess
+g = json.load(open('$G')); b = g['attempts'][0]['sandbox']['branch']
+files = subprocess.run(['git', '-C', '$T/pursuit', 'ls-tree', '-r', '--name-only', b], capture_output=True, text=True).stdout.split()
+assert 'AGENTS.md' not in files and 'CLAUDE.md' not in files and not any(f.startswith('.ostoyae') or f.startswith('.aider') for f in files), files"
+  assert "5c. $X: compiled Python is not committed, and PYTHONDONTWRITEBYTECODE=1 reached the cell" "
+import json, subprocess
+g = json.load(open('$G')); b = g['attempts'][0]['sandbox']['branch']
+files = subprocess.run(['git', '-C', '$T/pursuit', 'ls-tree', '-r', '--name-only', b], capture_output=True, text=True).stdout.split()
+assert 'w-hello.txt' in files and not any(f.endswith('.pyc') or '__pycache__' in f for f in files), files
+assert 'pythondontwritebytecode: 1' in open('$LOG').read()"
+  if [ "$X" = hermes ]; then
+    assert "5d. hermes: streamed reply fragments print as whole lines" "
+t = open('$T/$X-done.run').read()
+assert 'says: writing the file now.' in t and 'says: That blocked me.' in t, t
+assert 'says: ocked' not in t and 'says: le now' not in t, t"
+  fi
+  assert "5b. $X: the harness commit prints no ignored-path advice" "
+t = open('$T/$X-done.run').read()
+assert 'addIgnoredFile' not in t and 'following paths are ignored' not in t, t[-500:]"
+
+  # wall
+  board "$X" wall
+  G="$T/$X-wall.json"; LOG="$T/$X-wall.log"; : > "$LOG"
+  XDG_DATA_HOME="$T/xdg" STUB_LOG="$LOG" STUB_WALL=1 PATH="$T/bin:$PATH" node run.mjs "$G" --exec "bash $OST/executors/$X.sh" --max-launches 1 > "$T/$X-wall.run" 2>&1; echo "  run exit $?"
+  assert "6. $X: a prove the stub walled records walled, with partial work committed on the branch" "
+import json, subprocess
+g = json.load(open('$G')); a = g['attempts']; assert len(a) == 1 and a[0]['state'] == 'walled', [(x['state'], x.get('result')) for x in a]
+assert a[0]['result']['usage']['executor'] == '$X', a[0]['result']
+b = a[0]['sandbox']['branch']
+out = subprocess.run(['git', '-C', '$T/pursuit', 'show', b + ':w-hello.txt'], capture_output=True, text=True); assert out.returncode == 0, out
+subj = subprocess.run(['git', '-C', '$T/pursuit', 'log', '-1', '--format=%s', b], capture_output=True, text=True).stdout
+assert subj.startswith('walled, partial work: '), subj
+assert [w for w in g['work'] if w['id'].endswith('parser') or w.get('what') == 'Build the shared parser'], 'the wall proposed no work'
+files = subprocess.run(['git', '-C', '$T/pursuit', 'ls-tree', '-r', '--name-only', b], capture_output=True, text=True).stdout.split()
+assert not any(f == '.ostoyae' or f.startswith('.ostoyae/') for f in files), files"
+
+  # doctor
+  PATH="$T/bin:$PATH" node doctor.mjs "$T/$X-done.json" --exec "bash $OST/executors/$X.sh" > "$T/$X-doctor-ok.out" 2>&1; ok_rc=$?
+  # Hide real installed agents too: the negative half must run on every machine.
+  PATH="$T/without-agent" "$NODE" doctor.mjs "$T/$X-done.json" --exec "bash $OST/executors/$X.sh" > "$T/$X-doctor-bad.out" 2>&1; bad_rc=$?
+  assert "7. $X: doctor says ok executor with $X on PATH, bad without it, and calls no model" "
+ok = open('$T/$X-doctor-ok.out').read(); bad = open('$T/$X-doctor-bad.out').read()
+assert $ok_rc == 0 and 'executor' in ok and '$X is on PATH' in ok, ok
+assert $bad_rc != 0 and '$X is not on PATH' in bad, bad
+assert 'argv:' not in open('$LOG').read().split('argv:', 1)[1], 'the stub ran a second time under doctor'"
+
+  board "$X" effort
+  G="$T/$X-effort.json"; LOG="$T/$X-effort.log"; : > "$LOG"
+  python3 - "$G" <<'PY'
+import json, sys
+p = sys.argv[1]; g = json.load(open(p))
+g['defaults'] = {'model': 'provider/model', 'effort': 'high'}
+json.dump(g, open(p, 'w'))
+PY
+  XDG_DATA_HOME="$T/xdg" STUB_LOG="$LOG" PATH="$T/bin:$PATH" node run.mjs "$G" --exec "bash $OST/executors/$X.sh" --max-launches 1 > "$T/$X-effort.run" 2>&1
+  assert "8. $X: effort reaches the CLI or explains why it was ignored, and usage records it" "
+import json
+g=json.load(open('$G')); a=g['attempts'][0]; log=open('$LOG').read(); out=open('$T/$X-effort.run').read()
+assert a['params']['effort']=='high' and a['result']['usage']['effort']=='high', a
+flag={'aider':'--reasoning-effort high','muse':'--reasoning-effort high','grok':'--reasoning-effort high','hermes':'--reasoning high'}.get('$X')
+if flag: assert flag in log, log
+if '$X'=='opencode': assert 'provider/model#high' in log, log
+if '$X'=='gemini': assert 'effort ignored: Gemini CLI has no per-run effort flag' in out, out
+"
+done
+
+for X in claude codex; do
+  for MODE in plain effort; do
+    board "$X" "$MODE"
+    G="$T/$X-$MODE.json"; LOG="$T/$X-$MODE.log"; : > "$LOG"
+    python3 - "$G" "$MODE" <<'PY'
+import json, sys
+p, mode=sys.argv[1:]; g=json.load(open(p)); g['defaults']={'model':'stub-model'}
+if mode=='effort': g['defaults']['effort']='high'
+json.dump(g,open(p,'w'))
+PY
+    STUB_LOG="$LOG" PATH="$T/bin:$PATH" node run.mjs "$G" --exec "bash $OST/executors/$X.sh" --max-launches 1 > "$T/$X-$MODE.run" 2>&1
+    assert "$X $MODE: effort argument and usage match the attempt" "
+import json
+g=json.load(open('$G')); a=g['attempts'][0]; log=open('$LOG').read()
+assert a['state']=='done', (a,open('$T/$X-$MODE.run').read())
+if '$MODE'=='effort':
+ assert a['params']['effort']=='high' and a['result']['usage']['effort']=='high'
+ assert ('$X'=='claude' and '--effort high' in log) or ('$X'=='codex' and 'model_reasoning_effort=' in log and 'high' in log), log
+else:
+ assert 'effort' not in a['params'] and 'effort' not in a['result']['usage']
+ assert '--effort' not in log and 'model_reasoning_effort=' not in log, log
+"
+    assert "$X $MODE: compiled Python is not committed" "
+import json, subprocess
+g=json.load(open('$G')); b=g['attempts'][0]['sandbox']['branch']
+files=subprocess.run(['git','-C','$T/pursuit','ls-tree','-r','--name-only',b],capture_output=True,text=True).stdout.split()
+assert 'w-hello.txt' in files and not any(f.endswith('.pyc') or '__pycache__' in f for f in files), files"
+  done
+done
+
+board opencode no-model-effort
+G="$T/opencode-no-model-effort.json"; LOG="$T/opencode-no-model-effort.log"; : > "$LOG"
+python3 - "$G" <<'PY'
+import json, sys
+p=sys.argv[1]; g=json.load(open(p)); g['defaults']={'effort':'low'}; json.dump(g,open(p,'w'))
+PY
+STUB_LOG="$LOG" PATH="$T/bin:$PATH" node run.mjs "$G" --exec "bash $OST/executors/opencode.sh" --max-launches 1 > "$T/opencode-no-model-effort.run" 2>&1
+assert "9. OpenCode without model explains ignored effort" "
+log=open('$LOG').read(); out=open('$T/opencode-no-model-effort.run').read()
+assert '--model' not in log and 'effort ignored: OpenCode needs a model to carry a variant' in out,(log,out)
+"
+
+board grok bad-token
+G="$T/grok-bad-token.json"
+python3 - "$G" <<'PY'
+import json, sys
+p=sys.argv[1]; g=json.load(open(p)); g['defaults']={'effort':'bad.token'}; json.dump(g,open(p,'w'))
+PY
+node run.mjs "$G" --exec "bash $OST/executors/grok.sh" --max-launches 1 > "$T/grok-bad-token.run" 2>&1; code=$?
+assert "10. malformed effort is rejected before any attempt" "
+import json
+g=json.load(open('$G')); out=open('$T/grok-bad-token.run').read()
+assert $code==2 and not g['attempts'] and 'defaults.effort must match' in out,(g,out)
+"
+
+cat > "$T/bin/grok-reject" <<EOF
+#!/usr/bin/env bash
+echo 'unsupported reasoning effort' >&2
+exit 4
+EOF
+chmod +x "$T/bin/grok-reject"
+board grok rejected-level
+G="$T/grok-rejected-level.json"
+python3 - "$G" <<'PY'
+import json, sys
+p=sys.argv[1]; g=json.load(open(p)); g['defaults']={'effort':'bogus'}; g['work'][0].pop('check',None); json.dump(g,open(p,'w'))
+PY
+node run.mjs "$G" --exec "$T/bin/grok-reject" --max-launches 1 > "$T/grok-rejected-level.run" 2>&1
+assert "11. provider rejection of a well-formed effort lands on the attempt" "
+import json
+g=json.load(open('$G')); a=g['attempts'][0]
+assert a['params']['effort']=='bogus' and a['state']=='failed' and 'unsupported reasoning effort' in str(a['result']),a
+"
+
+# A repository that already tracks compiled Python keeps committing it: the filter is for junk,
+# not for a project that versions its bytecode on purpose.
+git init -q -b main "$T/pyc-pursuit" && (cd "$T/pyc-pursuit" && git config user.name r && git config user.email r@x \
+  && echo hello > README && printf 'bytecode' > kept.pyc && git add -A && git commit -qm start)
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+json.dump({"graph": "rehearse-pyc-tracked", "concurrency": 1, "max_attempts": 1,
+  "sandbox": {"repo": f"{T}/pyc-pursuit", "root": f"{T}/wt-pyc", "base": "main", "env_passthrough": ["STUB_LOG"]},
+  "work": [{"id": "w-hello", "what": "Write hello into w-hello.txt", "check": "test -f w-hello.txt"}],
+  "edges": [], "attempts": []}, open(f"{T}/pyc-tracked.json", "w"))
+PY
+STUB_LOG="$T/pyc-tracked.log" PATH="$T/bin:$PATH" node run.mjs "$T/pyc-tracked.json" --exec "bash $OST/executors/hermes.sh" --max-launches 1 > "$T/pyc-tracked.run" 2>&1
+assert "5e. a repository that already tracks .pyc files still gets them committed" "
+import json, subprocess
+g = json.load(open('$T/pyc-tracked.json')); b = g['attempts'][0]['sandbox']['branch']
+files = subprocess.run(['git', '-C', '$T/pyc-pursuit', 'ls-tree', '-r', '--name-only', b], capture_output=True, text=True).stdout.split()
+assert '__pycache__/stub.cpython-310.pyc' in files and 'stray.pyc' in files, files"
+
+# Hermes's zero-token result is an unknown ledger, not free usage.
+echo "== hermes zero-usage"
+mkdir -p "$T/hzero"
+cat > "$T/hzero/hermes" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo '{"type":"system","subtype":"init","model":"stub-hermes","session_id":"s"}'
+echo '{"type":"result","session_id":"s","exit_code":0,"text":"done","tokens":{"input":0,"output":0,"total":0,"cache_read":0,"cache_write":0},"duration_ms":20}'
+EOF
+chmod +x "$T/hzero/hermes"
+board hermes zero
+HZ="$T/hermes-zero.json"; HLOG="$T/hermes-zero.log"; : > "$HLOG"
+STUB_LOG="$HLOG" PATH="$T/hzero:$PATH" node run.mjs "$HZ" --exec "bash $OST/executors/hermes.sh" --max-launches 2 --max-output-tokens 1000 > "$T/hermes-zero.run" 2>&1
+assert "8. hermes: all-zero tokens record unknown usage and refuse the token cap" "
+import json
+g=json.load(open('$HZ')); u=g['attempts'][0]['result']['usage']
+assert u['input_tokens'] is None and u['output_tokens'] is None and u['cache_read_input_tokens'] is None, u
+assert 'unknown' in open('$T/hermes-zero.run').read().lower()"
+
+# Grok fail-closed usage and Claude-memory withholding. The zero stub emits an all-zero
+# result frame (the headless docs' unknown-ledger shape: buckets fall back to 0, cost falls
+# back to 0) and exits 1. The claude stub proves the loader cannot see the moved-aside
+# project memory: it records absence, then writes its own version like agent work would.
+echo "== grok zero-usage and claude-dir"
+mkdir -p "$T/zbin" "$T/cbin"
+cat > "$T/zbin/grok" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo '{"type":"system","subtype":"init","session_id":"s","model":"grok-4.6"}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"duration_api_ms":0,"num_turns":1,"result":"ok","stop_reason":"end_turn","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"modelUsage":{},"session_id":"s"}'
+exit 1
+EOF
+cat > "$T/cbin/grok" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+for ((i=1;i<=\$#;i++)); do [ "\${!i}" = --prompt-file ] && { j=\$((i+1)); echo "prompt-file: \$(cat "\${!j}")" >> "\$STUB_LOG"; }; done
+[ ! -e .claude/CLAUDE.md ] && [ ! -e .claude/CLAUDE.local.md ] && echo WITHHELD > withheld.txt
+echo agent-version > .claude/CLAUDE.md
+echo '{"type":"system","subtype":"init","session_id":"s","model":"grok-4.6"}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"duration_api_ms":4000,"num_turns":1,"result":"ok","stop_reason":"end_turn","total_cost_usd":0.002,"usage":{"input_tokens":500,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"modelUsage":{"grok-4.6":{}},"session_id":"s"}'
+EOF
+chmod +x "$T/zbin/grok" "$T/cbin/grok"
+git init -q -b main "$T/pursuit-claude" && (cd "$T/pursuit-claude" && git config user.name r && git config user.email r@x \
+  && mkdir -p .claude && echo operator-instructions > .claude/CLAUDE.md && echo operator-local > .claude/CLAUDE.local.md \
+  && echo hello > README && git add -A && git commit -qm start)
+python3 - "$T" <<'PY'
+import json
+T = __import__('sys').argv[1]
+mkboard = lambda name, repo, work: json.dump(
+  {"graph": f"rehearse-grok-{name}", "concurrency": 1, "max_attempts": 1,
+   "sandbox": {"repo": f"{T}/{repo}", "root": f"{T}/wt-grok-{name}", "base": "main",
+               "env_passthrough": ["STUB_LOG"]},
+   "work": work, "edges": [], "attempts": []},
+  open(f"{T}/grok-{name}.json", "w"), indent=2)
+mkboard("zero", "pursuit",
+        [{"id": "w-a", "what": "first", "check": "test -f w-a.txt"},
+         {"id": "w-b", "what": "second", "check": "test -f w-b.txt"}])
+# The solo check is false on purpose: the stub exits 1 AND the check fails, so the attempt
+# is genuinely failed rather than "exit 1, but the check passed".
+mkboard("zero-solo", "pursuit",
+        [{"id": "w-solo", "what": "only", "check": "false"}])
+mkboard("claude", "pursuit-claude",
+        [{"id": "w-hello", "what": "Write hello into w-hello.txt", "check": "test -f w-hello.txt"}])
+PY
+ZG="$T/grok-zero.json"
+STUB_LOG="$T/grok-zero.log" PATH="$T/zbin:$PATH" node run.mjs "$ZG" --exec "bash $OST/executors/grok.sh" --max-launches 2 --max-usd 5 > "$T/grok-zero-usd.run" 2>&1
+assert "8. grok: an all-zero result records unknown usage, never reported free" "
+import json; g = json.load(open('$ZG')); u = g['attempts'][0]['result']['usage']
+assert u.get('input_tokens') is None and u.get('output_tokens') is None and u.get('cost_usd') is None, u
+assert '_bad' not in u and u.get('executor') == 'grok' and u.get('turns') == 1, u
+assert u.get('cost_basis', '').startswith('unreported'), u"
+assert "9. grok: unknown dollars refuse the dollar cap instead of pricing free work" "
+t = open('$T/grok-zero-usd.run').read()
+assert 'unknown dollar cost on 1 attempt(s)' in t and '--max-usd cannot account for unreported spend' in t, t[-600:]"
+STUB_LOG="$T/grok-zero.log" PATH="$T/zbin:$PATH" node run.mjs "$ZG" --exec "bash $OST/executors/grok.sh" --max-launches 2 --max-output-tokens 1000 > "$T/grok-zero-tok.run" 2>&1
+assert "10. grok: unknown tokens refuse the token cap" "
+t = open('$T/grok-zero-tok.run').read()
+assert 'unknown output-token cost on 1 attempt(s)' in t, t[-600:]"
+ZSG="$T/grok-zero-solo.json"
+STUB_LOG="$T/grok-zero-solo.log" PATH="$T/zbin:$PATH" node run.mjs "$ZSG" --exec "bash $OST/executors/grok.sh" --max-launches 2 > "$T/grok-zero-solo.run" 2>&1
+STUB_LOG="$T/grok-zero-solo.log" PATH="$T/zbin:$PATH" node run.mjs "$ZSG" --exec "bash $OST/executors/grok.sh" --max-launches 2 > "$T/grok-zero-solo.run2" 2>&1
+assert "11. grok: a failed unknown-usage attempt counts against max_attempts" "
+import json
+t = open('$T/grok-zero-solo.run').read()
+assert 'exhausted  w-solo  after 1 attempt' in t, t[-600:]
+t2 = open('$T/grok-zero-solo.run2').read()
+assert 'Re-running as-is launches nothing' in t2, t2[-600:]
+g = json.load(open('$ZSG')); assert len(g['attempts']) == 1, g['attempts']"
+CG="$T/grok-claude.json"; CLOG="$T/grok-claude.log"; : > "$CLOG"
+STUB_LOG="$CLOG" PATH="$T/cbin:$PATH" node run.mjs "$CG" --exec "bash $OST/executors/grok.sh" --max-launches 1 > "$T/grok-claude.run" 2>&1
+assert "12. grok: tracked .claude memory is withheld from the loader; agent work at those paths wins" "
+import json, subprocess
+g = json.load(open('$CG')); a = g['attempts']
+assert len(a) == 1 and a[0]['state'] == 'done', [(x['state'], x.get('result')) for x in a]
+b = a[0]['sandbox']['branch']
+show = lambda p: subprocess.run(['git', '-C', '$T/pursuit-claude', 'show', b + ':' + p], capture_output=True, text=True).stdout
+assert 'WITHHELD' in show('withheld.txt'), 'loader saw the files'
+assert show('.claude/CLAUDE.md') == 'agent-version\n', 'agent work overwritten'
+assert show('.claude/CLAUDE.local.md') == 'operator-local\n', 'untouched original not restored'"
+assert "13. grok: the prompt names the withheld files and their aside path" "
+log = open('$CLOG').read()
+assert '.claude/CLAUDE.md' in log and 'claude-away' in log, log[-800:]"
+mkdir -p "$T/nbin"
+cat > "$T/nbin/grok" <<EOF
+#!/usr/bin/env bash
+. "$T/bin/stub-common"
+echo '{"type":"system","subtype":"init","session_id":"s","model":"grok-4.6"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"wrote it"}]}}'
+printf 'hello\n' > "w-nr-a.txt"
+exit 0
+EOF
+chmod +x "$T/nbin/grok"
+python3 - "$T" <<'PY'
+import json
+T = __import__('sys').argv[1]
+json.dump(
+  {"graph": "rehearse-grok-noresult", "concurrency": 1, "max_attempts": 1,
+   "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-grok-noresult", "base": "main",
+               "env_passthrough": ["STUB_LOG"]},
+   "work": [{"id": "w-nr-a", "what": "first", "check": "test -f w-nr-a.txt"},
+            {"id": "w-nr-b", "what": "second", "check": "test -f w-nr-b.txt"}],
+   "edges": [], "attempts": []},
+  open(f"{T}/grok-noresult.json", "w"), indent=2)
+PY
+NG="$T/grok-noresult.json"
+STUB_LOG="$T/grok-noresult.log" PATH="$T/nbin:$PATH" node run.mjs "$NG" --exec "bash $OST/executors/grok.sh" --max-launches 2 --max-usd 5 > "$T/grok-noresult.run" 2>&1
+assert "14. grok: a stream with no result frame records _bad without throwing" "
+import json
+t = open('$T/grok-noresult.run').read()
+assert 'Traceback' not in t and 'AttributeError' not in t, t[-600:]
+g = json.load(open('$NG')); u = g['attempts'][0]['result']['usage']
+assert u.get('_bad', '').startswith('no result frame in 2 stream lines'), u"
+assert "15. grok: the unpriced attempt refuses the dollar cap instead of launching free" "
+import json
+t = open('$T/grok-noresult.run').read()
+assert '--max-usd cannot account for unreported spend' in t, t[-600:]
+g = json.load(open('$NG')); assert len(g['attempts']) == 1, g['attempts']"
+
+echo ""
+[ "$fails" = 0 ] && echo "  $ran assertions, all passing" || echo "  $fails of $ran assertion(s) failed"
+exit $((fails > 0))

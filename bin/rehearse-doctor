@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# What doctor claims about a board it is about to green-light, rehearsed against real git and
+# real files. Zero model calls, no network, throwaway pursuits.
+#
+#   bin/rehearse-doctor           prints one line per assertion, exits non-zero if any fails
+#
+# Why this exists. `doctor` is the only thing standing between the operator and a launch, and
+# `go` refuses to launch when it fails, so a check that says ok without looking is worse than no
+# check: it converts "do not launch" into thirty dead attempts. Both cases below were that.
+#
+#   1. a base pinned to a commit the pursuit does not have is blocking, not `ok`
+#   2. and the run that doctor used to green-light really does fail to provision, every attempt
+#   3. a branch name, a short sha, a tag and an absent `base` all still resolve
+#   4. a base naming no ref at all is still blocking
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-doctor.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+ran=0
+skipped=0
+# `ran` is counted, never hardcoded: a rehearsal that prints "N assertions, all passing" for
+# assertions it never executed is the same failure as doctor saying ok without looking.
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+skip() { echo "  skip  $2"; skipped=$((skipped+$1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+
+git init -q -b main "$T/pursuit"
+(cd "$T/pursuit" && echo hello > README && git add -A \
+  && git -c user.name=r -c user.email=r@x commit -qm start && git tag v0 && git branch other)
+SHA=$(git -C "$T/pursuit" rev-parse HEAD)
+SHORT=${SHA:0:7}
+# Well-formed, 40 hex, and no such object in this pursuit. The shape of the real one.
+ABSENT=dd1615c0000000000000000000000000000000ab
+
+board() { python3 - "$T" "$1" "$2" <<'PY'
+import json, sys
+T, name, base = sys.argv[1:4]
+s = {"repo": f"{T}/pursuit", "root": f"{T}/wt-{name}", "port_base": 4980}
+if base != "-":
+    s["base"] = base
+g = {"graph": f"rehearse-doctor-{name}", "concurrency": 1, "max_attempts": 1, "sandbox": s,
+     "work": [{"id": "w-one", "what": "nothing", "check": "true"}], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/{name}.json", "w"), indent=2)
+PY
+}
+
+echo "== a base pinned to a commit the pursuit does not have"
+board absent "$ABSENT"
+node doctor.mjs "$T/absent.json" > "$T/absent.log" 2>&1; echo "  doctor exit $?"
+assert "1. doctor blocks it and names it, instead of printing ok and ready to launch" "
+t=open('$T/absent.log').read()
+assert 'ready to launch' not in t, t
+assert 'Not safe to launch' in t, t
+row=[l for l in t.splitlines() if 'pursuit base' in l]
+assert row and '$ABSENT' in row[0], t
+assert not [l for l in t.splitlines() if ' ok ' in l and 'base $ABSENT' in l], t"
+
+node run.mjs "$T/absent.json" --exec "bash $OST/executors/fake.sh" > "$T/absent-run.log" 2>&1
+echo "  run exit $?"
+assert "2. and the launch doctor used to green-light provisions nothing: every attempt fails" "
+import json; g=json.load(open('$T/absent.json'))
+a=g['attempts']
+assert a, 'the run recorded no attempt at all'
+assert all(x['state']=='failed' for x in a), [(x['id'],x['state']) for x in a]
+assert all('provision failed' in (x['result'] or {}).get('why','') for x in a), [x['result'] for x in a]"
+
+echo "== the spellings of base that must keep working"
+for c in "branch:other" "short:$SHORT" "full:$SHA" "tag:v0" "head:HEAD" "default:-"; do
+  n=${c%%:*}; b=${c#*:}
+  board "$n" "$b"
+  node doctor.mjs "$T/$n.json" > "$T/$n.log" 2>&1
+  assert "3. base as a $n resolves: doctor is ready to launch and the pursuit row is ok" "
+t=open('$T/$n.log').read()
+assert 'ready to launch' in t, t
+assert not [l for l in t.splitlines() if 'FAIL' in l], t
+assert [l for l in t.splitlines() if ' ok ' in l and 'pursuit ' in l], t"
+done
+
+echo "== a base that names nothing at all"
+board nosuch not-a-ref-anywhere
+node doctor.mjs "$T/nosuch.json" > "$T/nosuch.log" 2>&1
+assert "4. an unknown ref name is still blocking, with the same row" "
+t=open('$T/nosuch.log').read()
+assert 'Not safe to launch' in t, t
+assert [l for l in t.splitlines() if 'pursuit base' in l and 'not-a-ref-anywhere' in l], t"
+
+echo "== a bare interpreter, however it is spelled"
+# Until 2026-09-10 this check compared the whole word, so `python3` was refused and
+# `/opt/zeta-venv/bin/python` was not, granting the identical Bash(...:*) rule over every command.
+# A guard an absolute path walks around is not a guard. The three cases below are the whole rule:
+# the interpreter is the interpreter wherever it lives, an undeclared one blocks, and a board that
+# genuinely needs one says so in the file and gets a warning that names the power it granted.
+bare_board() {  # $1 name, $2 tools json
+  python3 - "$T" "$1" "$2" <<'PY2'
+import json, sys
+T, name, tools = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+json.dump({"graph": name, "concurrency": 1, "max_attempts": 1,
+           "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-{name}", "base": "main",
+                       "port_base": 4996, "tools": tools},
+           "work": [{"id": "w", "what": "x", "check": "true"}], "edges": [], "attempts": []},
+          open(f"{T}/{name}.json", "w"), indent=2)
+PY2
+}
+PYBIN=$(command -v python3)
+bare_board barepath  "[{\"cmd\": \"$PYBIN\", \"what\": \"an interpreter by absolute path, not declared\"}]"
+bare_board barename  "[{\"cmd\": \"python3\", \"what\": \"the same interpreter by name, not declared\"}]"
+bare_board baredecl  "[{\"cmd\": \"$PYBIN\", \"bare\": true, \"what\": \"the cell writes the script it runs\"}]"
+for n in barepath barename baredecl; do node doctor.mjs "$T/$n.json" > "$T/$n.log" 2>&1; done
+
+assert "5. an undeclared bare interpreter blocks when named by absolute path, not only by name" "
+t=open('$T/barepath.log').read()
+assert 'is a bare interpreter' in t, t
+assert 'Not safe to launch' in t, t"
+assert "5b. and by bare name, as it always did" "
+t=open('$T/barename.log').read()
+assert 'is a bare interpreter' in t, t
+assert 'Not safe to launch' in t, t"
+assert "6. the two spellings are refused alike: a path is not a way around the rule" "
+a=open('$T/barepath.log').read(); b=open('$T/barename.log').read()
+fa=[l.split('bare interpreter')[0][-1:] for l in a.splitlines() if 'bare interpreter' in l]
+assert ('Not safe to launch' in a) == ('Not safe to launch' in b), (a, b)"
+assert "7. a declared bare interpreter warns instead of refusing, and the printed line names the power" "
+t=open('$T/baredecl.log').read()
+assert 'is a bare interpreter, declared' in t, t
+assert 'grants the cell every command it can run' in t, t
+assert 'ready to launch' in t, t"
+
+echo ""
+if [ "$fails" -ne 0 ]; then
+  echo "  $fails failing."
+elif [ "$skipped" -ne 0 ]; then
+  echo "  $ran assertions, all passing; $skipped SKIPPED and therefore unproven"
+else
+  echo "  $ran assertions, all passing."
+fi
+exit $(( fails > 0 ))

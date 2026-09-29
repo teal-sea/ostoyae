@@ -1,0 +1,4 @@
+# Vendored bytes keep their upstream whitespace: the pre-lock fixture is a verbatim
+# copy of d632f2f (see rehearsals/fixtures/prelock-d632f2f.README.md), including two
+# trailing-space comment lines, so whitespace-error reporting is off for that tree only.
+rehearsals/fixtures/prelock-d632f2f/** -whitespace

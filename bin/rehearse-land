@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Taking the finished work, rehearsed. Zero model calls: the fake executor does the work.
+#
+#   bin/rehearse-land            prints one line per assertion, exits non-zero if any fails
+#
+# Why this exists. On 2026-09-27 a first-time user's run fixed the bug, and `main` still had it:
+# the fix was on `ost/<graph>/trunk` and nothing in the output said so.
+#
+#   1. the end of `go` names the trunk branch and the exact land command
+#   2. `go --json` carries the same as `result_branch`
+#   3. land fast-forwards the checked-out base, and the base now has the work
+#   4. land a second time says there is nothing to land and exits 0
+#   5. a modified tracked file refuses, names the file, prints the git merge command, moves nothing
+#   6. an untracked file (the board itself) does not count as dirty
+#   7. a base that moved since the run refuses as not a fast-forward and prints the merge command
+#   8. a runner file beside the board refuses and moves nothing
+#   9. a base branch checked out nowhere is fast-forwarded without a checkout
+#  10. a board whose base is a detached commit refuses and prints a merge command
+#  11. `go --help` and `land --help` print help for that command, not the general help
+#  12. init's next steps say `ostoyae` when the ostoyae on PATH is this install, else the path
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-land.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+export OSTOYAE_STATE_DIR="$T/state" OSTOYAE_NO_OPEN=1 NO_COLOR=1
+fails=0
+ran=0
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+check() { if eval "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+O="$OST/bin/ostoyae"
+FAKE="bash $OST/executors/fake.sh"
+G() { git -c user.name=r -c user.email=r@x "$@"; }
+
+# A repository, a board with one item, and a finished run.
+mkrun() {
+  local dir="$1"
+  git init -q -b main "$dir" && printf 'def add(a, b):\n    return a - b\n' > "$dir/calc.py"
+  (cd "$dir" && G add -A && G commit -qm start)
+  (cd "$dir" && "$O" init --exec "$FAKE" --item "Fix add" --check "test -f w-fix-add.txt" > "$T/init.out" 2>&1)
+  (cd "$dir" && "$O" go ostoyae.json --invocations 2 --headless > "$T/go.out" 2>&1)
+}
+trunk() { git -C "$1" for-each-ref --format='%(refname:short)' 'refs/heads/ost/*/trunk'; }
+
+mkrun "$T/a"
+TR=$(trunk "$T/a")
+check "1. go names the trunk branch and the land command" \
+  "grep -q 'Finished work: 1 commit(s) on branch $TR' '$T/go.out' && grep -q \"land 'ostoyae.json'\" '$T/go.out'"
+(cd "$T/a" && "$O" land ostoyae.json > "$T/land1.out" 2>&1); rc=$?
+check "3. land fast-forwards main, and main now has the work" \
+  "[ $rc = 0 ] && [ \"\$(git -C '$T/a' rev-parse main)\" = \"\$(git -C '$T/a' rev-parse '$TR')\" ] && git -C '$T/a' show main:w-fix-add.txt"
+(cd "$T/a" && "$O" land ostoyae.json > "$T/land2.out" 2>&1); rc=$?
+check "4. landing again says nothing to land, exit 0" "[ $rc = 0 ] && grep -q 'Nothing to land' '$T/land2.out'"
+
+# 2: the JSON path, on a fresh run.
+git init -q -b main "$T/j" && echo x > "$T/j/f" && (cd "$T/j" && G add -A && G commit -qm start)
+(cd "$T/j" && "$O" init --exec "$FAKE" --item "Do j" --check "true" > /dev/null 2>&1 \
+  && "$O" go ostoyae.json --invocations 1 --json > "$T/go.json" 2>/dev/null)
+check "2. go --json carries result_branch with the trunk and land command" "python3 -c \"
+import json; d = json.load(open('$T/go.json'))['result_branch']
+assert d['branch'].endswith('/trunk') and d['commits_ahead'] == 1 and d['base'] == 'main', d
+assert d['land_command'].endswith(\\\"land 'ostoyae.json'\\\"), d\""
+
+# 5 and 6: dirty tracked file refuses; the untracked board does not count.
+mkrun "$T/d"
+echo '# local edit' >> "$T/d/calc.py"
+before=$(git -C "$T/d" rev-parse main)
+(cd "$T/d" && "$O" land ostoyae.json > "$T/dirty.out" 2>&1); rc=$?
+check "5. a modified tracked file refuses, names it, prints the merge command, moves nothing" \
+  "[ $rc = 1 ] && grep -q 'calc.py' '$T/dirty.out' && grep -q 'git merge' '$T/dirty.out' && [ \"\$(git -C '$T/d' rev-parse main)\" = '$before' ]"
+git -C "$T/d" checkout -q -- calc.py
+(cd "$T/d" && "$O" land ostoyae.json > "$T/clean.out" 2>&1); rc=$?
+check "6. with only untracked files (the board) present, land proceeds" \
+  "[ $rc = 0 ] && [ -n \"\$(git -C '$T/d' status --porcelain)\" ] && git -C '$T/d' show main:w-fix-add.txt"
+
+# 7: the base moved after the run.
+mkrun "$T/m"
+(cd "$T/m" && echo more > other.txt && G add other.txt && G commit -qm 'moved on')
+before=$(git -C "$T/m" rev-parse main)
+(cd "$T/m" && "$O" land ostoyae.json > "$T/moved.out" 2>&1); rc=$?
+check "7. a base that moved refuses as not a fast-forward, prints the merge command" \
+  "[ $rc = 1 ] && grep -q 'not a fast-forward' '$T/moved.out' && grep -q \"git merge '$(trunk "$T/m")'\" '$T/moved.out' && [ \"\$(git -C '$T/m' rev-parse main)\" = '$before' ]"
+
+# 8: a runner file beside the board.
+mkrun "$T/r"
+echo '{}' > "$T/r/ostoyae.run.json"
+before=$(git -C "$T/r" rev-parse main)
+(cd "$T/r" && "$O" land ostoyae.json > "$T/runner.out" 2>&1); rc=$?
+check "8. a runner file refuses and moves nothing" \
+  "[ $rc = 1 ] && grep -q 'runner file' '$T/runner.out' && [ \"\$(git -C '$T/r' rev-parse main)\" = '$before' ]"
+rm -f "$T/r/ostoyae.run.json"
+
+# 9: main is not checked out anywhere.
+mkrun "$T/n"
+git -C "$T/n" switch -q -c elsewhere
+(cd "$T/n" && "$O" land ostoyae.json > "$T/nowhere.out" 2>&1); rc=$?
+check "9. a base checked out nowhere is fast-forwarded in place" \
+  "[ $rc = 0 ] && [ \"\$(git -C '$T/n' rev-parse main)\" = \"\$(git -C '$T/n' rev-parse '$(trunk "$T/n")')\" ] && [ \"\$(git -C '$T/n' branch --show-current)\" = elsewhere ]"
+
+# 10: detached base.
+git init -q -b main "$T/h" && echo x > "$T/h/f" && (cd "$T/h" && G add -A && G commit -qm start && git checkout -q --detach)
+(cd "$T/h" && "$O" init --exec "$FAKE" --item "Do h" --check "true" > /dev/null 2>&1 \
+  && "$O" go ostoyae.json --invocations 1 --headless > /dev/null 2>&1 && "$O" land ostoyae.json > "$T/detached.out" 2>&1); rc=$?
+check "10. a detached-commit base refuses and prints a merge command" \
+  "[ $rc = 1 ] && grep -q 'is a commit, not a branch' '$T/detached.out' && grep -q 'merge' '$T/detached.out'"
+
+# 11: per-command help.
+"$O" go --help > "$T/gohelp.out" 2>&1
+"$O" land --help > "$T/landhelp.out" 2>&1
+check "11. go --help and land --help are specific to the command" \
+  "grep -q -- '--invocations N' '$T/gohelp.out' && ! grep -q 'ostoyae providers' '$T/gohelp.out' && grep -q 'Fast-forwards' '$T/landhelp.out' && ! grep -q -- '--invocations' '$T/landhelp.out'"
+
+# 12: init's next steps, with and without this install on PATH.
+mkdir -p "$T/pathbin" && ln -s "$OST/bin/ostoyae" "$T/pathbin/ostoyae"
+git init -q -b main "$T/p" && echo x > "$T/p/f" && (cd "$T/p" && G add -A && G commit -qm start)
+(cd "$T/p" && PATH="$T/pathbin:$PATH" "$O" init --exec "$FAKE" --item "x" > "$T/init-path.out" 2>&1)
+(cd "$T/p" && PATH="/usr/bin:/bin:$(dirname "$(command -v node)")" "$O" init --force --exec "$FAKE" --item "x" > "$T/init-nopath.out" 2>&1)
+check "12. init says 'ostoyae doctor' with this install on PATH, the absolute path without it" \
+  "grep -q \"next:  ostoyae doctor 'ostoyae.json'\" '$T/init-path.out' && grep -q \"next:  '$OST/bin/ostoyae' doctor\" '$T/init-nopath.out'"
+
+echo
+if [ "$fails" = 0 ]; then echo "  rehearse-land: $ran assertions, all passing"; else echo "  rehearse-land: $fails of $ran FAILED"; fi
+[ "$fails" = 0 ]

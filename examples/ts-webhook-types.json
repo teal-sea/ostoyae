@@ -1,0 +1,57 @@
+{
+  "graph": "ts-webhook-types",
+  "concurrency": 2,
+  "max_attempts": 2,
+  "defaults": {
+    "agent": "claude",
+    "model": "sonnet",
+    "budget": "20m"
+  },
+  "sandbox": {
+    "repo": "/path/to/booking-api",
+    "root": "/path/to/ostoyae-worktrees",
+    "base": "main",
+    "port_base": 4220,
+    "link": [
+      "node_modules"
+    ],
+    "env_passthrough": [
+      "CI",
+      "NPM_CONFIG_CACHE"
+    ],
+    "tools": [
+      {
+        "cmd": "npx tsc",
+        "what": "the typechecker from node_modules/.bin, which is what w-types has to satisfy",
+        "probe": "npx tsc --version"
+      },
+      {
+        "cmd": "npm test",
+        "what": "run the suite through the package's own test script"
+      },
+      {
+        "cmd": "npm run",
+        "what": "the other package scripts: build, lint, generate"
+      }
+    ],
+    "notes": "A human runs `npx tsc --noEmit -p tsconfig.json`, then `npm test`. `node_modules` arrives linked from the pursuit and one directory is shared by every cell, so `npm ci` and `npm install` are deliberately not declared: either one rewrites the directory the other cells are reading. Adding a dependency is therefore not work for a cell. CI is passed because a test runner that sees it runs once and exits instead of watching, and NPM_CONFIG_CACHE because `npx` resolves an already-downloaded package from the cache instead of reaching for the registry, which a cell cannot rely on. `node --test` is the runner underneath `npm test` and must not be declared as a tool: doctor refuses a bare interpreter, and `node --test` reads to it as a script called `--test`."
+  },
+  "work": [
+    {
+      "id": "w-types",
+      "what": "Replace the `any` cast on the incoming payment webhook payload with a discriminated union of the four event kinds the handler acts on, so the compiler rejects a kind nothing handles.",
+      "needs": [],
+      "check": "npx tsc --noEmit -p tsconfig.json"
+    },
+    {
+      "id": "w-handler",
+      "what": "Make the webhook handler idempotent on the event id: a redelivery must not confirm a booking twice.",
+      "needs": [
+        "w-types"
+      ],
+      "check": "npm test --silent"
+    }
+  ],
+  "edges": [],
+  "attempts": []
+}

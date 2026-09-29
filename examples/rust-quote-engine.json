@@ -1,0 +1,62 @@
+{
+  "graph": "rust-quote-engine",
+  "concurrency": 2,
+  "max_attempts": 2,
+  "defaults": {
+    "agent": "claude",
+    "model": "sonnet",
+    "budget": "20m"
+  },
+  "sandbox": {
+    "repo": "/path/to/quote-engine",
+    "root": "/path/to/ostoyae-worktrees",
+    "base": "main",
+    "port_base": 4200,
+    "link": [
+      "vendor"
+    ],
+    "env_passthrough": [
+      "CARGO_HOME",
+      "RUSTUP_HOME"
+    ],
+    "tools": [
+      {
+        "cmd": "cargo build",
+        "what": "compile the crate. --offline, the registry cache arrives through CARGO_HOME",
+        "probe": "cargo --version"
+      },
+      {
+        "cmd": "cargo test",
+        "what": "run the test suite, which is what both checks below are built on"
+      },
+      {
+        "cmd": "cargo clippy",
+        "what": "the lint gate: -D warnings is what w-clippy has to satisfy",
+        "probe": "cargo clippy --version"
+      },
+      {
+        "cmd": "cargo fmt",
+        "what": "rustfmt, so a diff is not half formatting"
+      }
+    ],
+    "notes": "A human runs `cargo test --locked --offline` from the crate root, then `cargo clippy --locked --offline --all-targets -- -D warnings`. A cell is a bare worktree with no `target/`, so its first build is a cold one; `target/` is this crate's own output and every cell writes it, so it is not linked. `vendor/` is, because `cargo vendor` output is read-only and identical for every cell. `cargo fetch` is the only step that wants the network and no check runs it: the registry cache reaches the cell through CARGO_HOME and the pinned toolchain through RUSTUP_HOME, both of which the cell would otherwise lose."
+  },
+  "work": [
+    {
+      "id": "w-zero-miles",
+      "what": "Make `tariff::quote` return `Err(QuoteError::ZeroDistance)` for a trip of zero miles instead of dividing by the mileage and panicking. Cover it with a test beside the existing tariff tests.",
+      "needs": [],
+      "check": "cargo test --locked --offline"
+    },
+    {
+      "id": "w-clippy",
+      "what": "Clear the clippy warnings the zero-mile branch adds, without changing the signature of `tariff::quote`.",
+      "needs": [
+        "w-zero-miles"
+      ],
+      "check": "cargo clippy --locked --offline --all-targets -- -D warnings"
+    }
+  ],
+  "edges": [],
+  "attempts": []
+}

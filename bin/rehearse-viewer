@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# The two viewer defects from the tinygrad A/B campaign, rehearsed with no model and no
+# browser: a sandboxed viewer that cannot inspect processes, and the label layout math.
+#
+#   bin/rehearse-viewer           prints one line per assertion, exits non-zero if any fails
+#
+#   1. a viewer blind to other processes (sandboxed shell) reports the runner UNKNOWN,
+#      never "the run died": ESRCH from a blind inspector is unknown, from a sighted one dead
+#   2. the heading-overlap math: the shipped headingRect/pushOutOf, extracted from the page
+#      and run in node, pushes a node's label box out from under a family heading, along
+#      the shorter axis, and leaves clear pairs alone
+#   3. the wiring is present: the per-frame separation pass treats headings as obstacles,
+#      and a half-width media rule narrows the rail so the canvas keeps room for labels
+#   4. the shipped page in a real headless browser at 1440 and 720 px: jobs and headings
+#      drawn, none overlapping (skips where no browser executes)
+#   5. a decision during a live --gate is refused, never accepted-then-erased: the
+#      viewer claims the same lock the CLI writers hold, and launch refuses into it
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-viewer.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; python3 -c "$2" 2>&1 | tail -3 | sed 's/^/        /'; fi; }
+
+echo "== 1: a blind inspector says unknown, never gone"
+node --input-type=module > "$T/blind.log" 2>&1 <<'JS'
+import { inspectProcess, inspectProcessGroup, processOwner, canSeeProcesses } from "./lib/process-identity.mjs";
+let fails = 0;
+const check = (n, c) => { console.log((c ? "  ok    " : "  FAIL  ") + n); if (!c) fails++; };
+check("sighted control: this process is never reported dead", inspectProcess(process.pid).status !== "dead");
+check("sighted control: the inspector sees processes", canSeeProcesses() === true);
+check("sighted control: a far dead pid is dead", inspectProcess(99999999).status === "dead");
+// The sandboxed viewer: every signal says ESRCH, even for processes that are alive.
+const realKill = process.kill;
+process.kill = () => { const e = new Error("mock blind"); e.code = "ESRCH"; throw e; };
+let r;
+r = inspectProcess(process.pid);
+check("blind: a live pid is unknown, not dead", r.status === "unknown");
+check("blind: ownership is unverifiable, not gone", processOwner(process.pid, {}) === null);
+check("blind: a process group is unknown, not dead",
+  inspectProcessGroup(1).status === "unknown");
+process.kill = realKill;
+check("restored: a far dead pid is dead again", inspectProcess(99999999).status === "dead");
+process.exit(fails ? 1 : 0);
+JS
+if [ "$?" = 0 ]; then pass "1. ESRCH reads dead sighted, unknown blind"; else fail "1. blind-inspector verdicts"; tail -4 "$T/blind.log" | sed 's/^/        /'; fi
+
+echo "== 2: the heading-overlap math, as shipped in the page"
+python3 - "$OST/viewer/index.html" "$T/heads.mjs" <<'PY'
+import re, sys
+src, dest = open(sys.argv[1]).read(), open(sys.argv[2], "w")
+def grab(name):
+    i = src.index(f"function {name}(")
+    j = src.index("{", i)
+    depth, k = 0, j
+    while True:
+        if src[k] == "{": depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if not depth: return src[i:k + 1]
+        k += 1
+m = re.search(r"const BOXW = (\d+), BOXH = (\d+);", src)
+dest.write(f"const BOXW = {m.group(1)}, BOXH = {m.group(2)};\n")
+dest.write(grab("headingRect") + "\n" + grab("pushOutOf") + "\n")
+dest.write('if (typeof headingRect !== "function" || typeof pushOutOf !== "function")'
+           ' { console.log("  FAIL  shipped functions not found"); process.exit(1); }\n')
+dest.write(r"""
+let fails = 0;
+const check = (n, c) => { console.log((c ? "  ok    " : "  FAIL  ") + n); if (!c) fails++; };
+const overlaps = (x, y, w, h, r) =>
+  Math.min(x + w / 2, r.x1) - Math.max(x - w / 2, r.x0) > 0 &&
+  Math.min(y + h / 2, r.y1) - Math.max(y - h / 2, r.y0) > 0;
+// The campaign shape: the 'not mapped yet' heading over the first parked node's label.
+const h = headingRect({ x: 0, y: 84, text: "not mapped yet", n: 5 });
+check("heading text matches the page's caption", h.x1 - h.x0 > 200);
+// A label box whose top edge sits 4px inside the heading, whatever height the page gives it.
+const by = h.y1 - 4 + BOXH / 2;
+const p = pushOutOf(0, by, BOXW, BOXH, h);
+check("an overlapped label box gets a push", !!p);
+if (p) check("the push clears the heading", !overlaps(0 + p.dx, by + p.dy, BOXW, BOXH, h));
+check("a clear pair gets no push", pushOutOf(2000, 2000, BOXW, BOXH, h) === null);
+// Narrower overlap axis wins: a tall sliver pushes sideways, a flat sliver pushes down.
+const side = pushOutOf(0, 0, 40, 40, { x0: 15, x1: 100, y0: -100, y1: 100 });
+check("a tall sliver pushes sideways", !!side && side.dx !== 0 && side.dy === 0);
+const down = pushOutOf(0, 0, 40, 40, { x0: -100, x1: 100, y0: 15, y1: 100 });
+check("a flat sliver pushes vertically", !!down && down.dx === 0 && down.dy !== 0);
+process.exit(fails ? 1 : 0);
+""")
+PY
+if [ "$?" != 0 ]; then fail "2. heading functions extract from the page"
+else node "$T/heads.mjs" > "$T/heads.log" 2>&1
+  if [ "$?" = 0 ]; then pass "2. headings push labels out, shorter axis first"; else fail "2. heading math"; tail -4 "$T/heads.log" | sed 's/^/        /'; fi
+fi
+
+assert "3. the per-frame pass treats headings as obstacles" "
+src=open('$OST/viewer/index.html').read()
+assert 'sim.bandLabels.map(headingRect)' in src and 'pushOutOf(v.x, v.y, BOXW, BOXH, h)' in src"
+assert "3. a half-width rule narrows the rail for side-by-side viewers" "
+import re;src=open('$OST/viewer/index.html').read()
+assert re.search(r'@media\s*\(max-width:1100px\)\s*\{\s*#rail\s*\{\s*width:320px',src), 'no 1100px rail rule'"
+assert "3. attempt detail and graph read the recorded agent, model and effort" "
+src=open('$OST/viewer/index.html').read();api=open('$OST/viewer/serve.mjs').read()
+assert 'agent: a.params?.agent' in api and 'model: a.params?.model' in api and 'effort: a.params?.effort' in api
+assert '[a.agent, a.model, a.effort]' in src and 'badge.textContent = active?.agent' in src"
+
+echo "== 4: the rendered page, in a real headless browser"
+# The shipped page, served by the shipped server, read back from a real browser engine
+# at full and half width: every job label and every heading drawn, none overlapping.
+# Skips where no headless browser runs (a sandboxed shell aborts the browser outright).
+# Every browser call runs under its own --user-data-dir (no shared profile lock with a
+# running Chrome) and a wall-clock bound: a hung probe is the designed skip, a hung page
+# dump fails fast. An unbounded probe hung 21 minutes on CI run 35394165295 (both jobs)
+# and 17 minutes locally, each time killing its 25-minute job with no verdict.
+run_bounded() { # $1=seconds $2=outfile rest=command: 124 on timeout, else the exit code
+  # Chrome on some machines writes the whole document and then never exits (seen on macOS
+  # 27, old page and new alike): once $DONE_WHEN and </html> are in the file the document is
+  # complete, so the browser is stopped and the dump counts.
+  local secs="$1" out="$2"; shift 2
+  "$@" > "$out" 2>/dev/null &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ -n "${DONE_WHEN:-}" ] && grep -q "$DONE_WHEN" "$out" 2>/dev/null && grep -q '</html>' "$out" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      return 0
+    fi
+    if [ "$waited" -ge "$secs" ]; then
+      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      pkill -9 -f "$T/chrome-" 2>/dev/null
+      return 124
+    fi
+    sleep 1; waited=$((waited+1))
+  done
+  wait "$pid" 2>/dev/null; return $?
+}
+CHROME=""
+for c in "${CHROME_BIN:-}" "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+         "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+         "$(command -v google-chrome 2>/dev/null)" "$(command -v chromium 2>/dev/null)"; do
+  [ -n "$c" ] && [ -x "$c" ] && CHROME="$c" && break
+done
+if [ -z "$CHROME" ]; then
+  echo "  skip  4. no headless browser on PATH"
+else
+  run_bounded 2 "$T/bound-probe.txt" sleep 30
+  if [ "$?" != 124 ]; then fail "4. test harness: the bounded runner does not bound"; fi
+  if ! DONE_WHEN=probe run_bounded 60 "$T/probe.html" "$CHROME" --headless --no-sandbox --disable-gpu \
+       --disable-dev-shm-usage --user-data-dir="$T/chrome-probe" --dump-dom \
+       'data:text/html,<title>probe</title>' || ! grep -q probe "$T/probe.html"; then
+    echo "  skip  4. the browser does not execute here"
+  else
+    python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+w = [{"id": f"w-t{i}", "label": f"ticket {1000+i}",
+      "what": f"fix the thing number {i} in the parser module"} for i in range(5)]
+w += [{"id": "w-a", "label": "alpha job", "what": "build the alpha widget"},
+      {"id": "w-b", "label": "beta job", "what": "build the beta widget"}]
+g = {"graph": "audit-fixture", "concurrency": 1, "max_attempts": 2,
+     "mapping": {"what": "map it"}, "work": w,
+     "edges": [{"id": "e-0001", "from": "w-a", "to": "w-b",
+                "status": "confirmed", "why": "b needs a"}], "attempts": []}
+json.dump(g, open(f"{T}/board.json", "w"))
+PY
+    SRV=""
+    for PORT in 4741 4742 4743 4744 4745; do
+      node "$OST/viewer/serve.mjs" "$T/board.json" --port "$PORT" --read-only > "$T/serve.log" 2>&1 &
+      SRV=$!
+      for _ in $(seq 1 15); do
+        curl -sf "127.0.0.1:$PORT/api/graph" > /dev/null 2>&1 && break 2
+        sleep 1
+      done
+      kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=""
+    done
+    if [ -z "$SRV" ]; then
+      fail "4. the viewer server did not answer"; tail -5 "$T/serve.log" | sed 's/^/        /'
+    else
+      trap 'kill $SRV 2>/dev/null; [ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+      for W in 1440 720; do
+        if ! DONE_WHEN='id="audit"' run_bounded 120 "$T/dom-$W.html" "$CHROME" --headless --no-sandbox \
+          --disable-gpu --disable-dev-shm-usage --user-data-dir="$T/chrome-$W" \
+          --hide-scrollbars --window-size=${W},900 --virtual-time-budget=15000 --dump-dom \
+          "http://127.0.0.1:$PORT/?still&audit"; then
+          fail "4. width $W: the browser did not answer within the bound"
+        else
+        python3 - "$T/dom-$W.html" "$W" > "$T/audit-$W.json" 2>"$T/audit-$W.err" <<'PY'
+import re, sys, html, json
+src = open(sys.argv[1]).read()
+m = re.search(r'<div id="audit"[^>]*>(.*?)</div>', src, re.S)
+if not m:
+    print(f"no #audit node at width {sys.argv[2]}", file=sys.stderr); sys.exit(1)
+print(html.unescape(m.group(1)))
+PY
+        if [ "$?" != 0 ]; then fail "4. width $W renders an audit"; sed 's/^/        /' "$T/audit-$W.err"
+        else
+          assert "4. width $W: jobs and headings drawn, none overlapping" "
+import json;a=json.load(open('$T/audit-$W.json'))
+assert a['jobs']>0 and a['headings']>0, a
+assert a['overlaps']==[], a['overlaps']"
+        fi
+        fi
+      done
+      kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+      trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+    fi
+  fi
+fi
+
+echo "== 5: a decision during --gate is refused, never accepted-then-erased"
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "viewer-gate", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 5140},
+     "ontology": {"kinds": {"t": {"claim": ["statement"], "id": "t-{statement}",
+       "what": "Do {statement}", "gate": "sleep 12"}}},
+     "work": [{"id": "w-g", "kind": "t", "claim": {"statement": "s"}, "what": "gated"},
+              {"id": "w-x", "what": "proposed thing", "needs": [], "status": "proposed",
+               "found_by": ["a-0000"], "found_at": "t"}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/vg.json", "w"), indent=2)
+PY
+node "$OST/run.mjs" "$T/vg.json" --gate > "$T/vg-gate.log" 2>&1 & VGGATE=$!
+for _ in $(seq 1 50); do [ -f "$T/vg.run.json.lock" ] && break; sleep 0.2; done
+if [ ! -f "$T/vg.run.json.lock" ]; then fail "5. gate never claimed the lock (setup)"; kill $VGGATE 2>/dev/null || true
+else
+  VSRV=""
+  for PORT in 18731 18732 18733 18734 18735; do
+    node "$OST/viewer/serve.mjs" "$T/vg.json" --port "$PORT" --control > "$T/vg-viewer.log" 2>&1 &
+    VSRV=$!
+    for _ in $(seq 1 50); do
+      curl -sf "127.0.0.1:$PORT/api/health" > /dev/null 2>&1 && break 2
+      sleep 0.1
+    done
+    kill "$VSRV" 2>/dev/null; wait "$VSRV" 2>/dev/null; VSRV=""
+  done
+  if [ -z "$VSRV" ]; then fail "5. viewer never answered (setup)"; tail -3 "$T/vg-viewer.log" | sed 's/^/        /'; kill $VGGATE 2>/dev/null || true
+  else
+    curl -s -X POST "127.0.0.1:$PORT/api/decide" -H 'content-type: application/json' \
+      -d '{"confirm":["w-x"]}' > "$T/vg-decide.json"; echo "  decide attempted"
+    curl -s -X POST "127.0.0.1:$PORT/api/launch" -H 'content-type: application/json' \
+      -d '{"invocations":1}' > "$T/vg-launch.json"; echo "  launch attempted"
+    wait $VGGATE; VGATE_RC=$?
+    assert "5a. decide mid-gate is refused 409, naming the gate" "
+import json;d=json.load(open('$T/vg-decide.json'))
+assert d.get('status')==409, d
+assert 'gating the board' in d.get('error',''), d"
+    assert "5b. launch mid-gate is refused 409, spawning nothing" "
+import json;d=json.load(open('$T/vg-launch.json'))
+assert d.get('status')==409, d
+assert 'gating the board' in d.get('error',''), d
+assert 'pid' not in d, d"
+    assert "5c. the gate finished clean and the proposal is still proposed" "
+import json;g=json.load(open('$T/vg.json'))
+assert $VGATE_RC == 0, open('$T/vg-gate.log').read()[-300:]
+wx=[w for w in g['work'] if w['id']=='w-x'][0]
+assert wx['status']=='proposed', wx"
+    kill "$VSRV" 2>/dev/null; wait "$VSRV" 2>/dev/null
+    node "$OST/viewer/serve.mjs" "$T/vg.json" --port "$PORT" --control > "$T/vg-viewer2.log" 2>&1 &
+    VSRV2=$!
+    for _ in $(seq 1 50); do
+      curl -sf "127.0.0.1:$PORT/api/health" > /dev/null 2>&1 && break
+      sleep 0.1
+    done
+    curl -s -X POST "127.0.0.1:$PORT/api/decide" -H 'content-type: application/json' \
+      -d '{"confirm":["w-x"]}' > "$T/vg-decide2.json"
+    kill "$VSRV2" 2>/dev/null; wait "$VSRV2" 2>/dev/null
+    assert "5d. on an idle board the same decision lands, and no lock is left" "
+import json, os;d=json.load(open('$T/vg-decide2.json'))
+assert d.get('status')==200, d
+assert d.get('changed')==['w-x: active'], d
+g=json.load(open('$T/vg.json'))
+assert [w for w in g['work'] if w['id']=='w-x'][0]['status']=='active'
+assert not os.path.exists('$T/vg.run.json.lock')"
+    # Without --control the page only shows the board: a decision is refused before the
+    # scheduler sees it, and the page says so (readOnly true, no yes/no on the rail).
+    node "$OST/viewer/serve.mjs" "$T/vg.json" --port "$PORT" > "$T/vg-viewer3.log" 2>&1 &
+    VSRV3=$!
+    for _ in $(seq 1 50); do
+      curl -sf "127.0.0.1:$PORT/api/health" > /dev/null 2>&1 && break
+      sleep 0.1
+    done
+    curl -s -o "$T/vg-decide3.json" -w '%{http_code}' -X POST "127.0.0.1:$PORT/api/decide" -H 'content-type: application/json' \
+      -d '{"reject":["w-x"]}' > "$T/vg-decide3.code"
+    curl -s "127.0.0.1:$PORT/api/graph" > "$T/vg-graph3.json"
+    kill "$VSRV3" 2>/dev/null; wait "$VSRV3" 2>/dev/null
+    assert "5e. without --control a decision is refused 403 and the board is untouched" "
+import json;code=open('$T/vg-decide3.code').read().strip();d=json.load(open('$T/vg-decide3.json'))
+assert code=='403', (code, d)
+assert 'control' in d.get('error',''), d
+s=json.load(open('$T/vg-graph3.json'))
+assert s['readOnly'] is True and s['control'] is False, (s['readOnly'], s['control'])
+g=json.load(open('$T/vg.json'))
+assert [w for w in g['work'] if w['id']=='w-x'][0]['status']=='active', 'reject went through without --control'"
+  fi
+fi
+
+echo
+if [ "$fails" = 0 ]; then echo "  rehearsal passed"; else echo "  $fails assertion(s) failed; logs in $T (kept)"; trap - EXIT; exit 1; fi

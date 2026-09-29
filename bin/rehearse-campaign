@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# What a scheduled owner needs that a runner alone does not give it, rehearsed with the fake
+# executor: zero model calls.
+#
+#   bin/rehearse-campaign        prints one line per assertion, exits non-zero if any fails
+#
+# A Routine is the only durable owner available to a campaign in a cloud VM, because the VM is
+# reclaimed on idle and Anthropic's docs say background shell commands are not restored. Every
+# firing of a Routine is a NEW session that clones the repository from scratch, starting at the
+# default branch. Nothing on the previous firing's disk survives.
+#
+# HANDOFF.md and issue 58's status comment both say the two prerequisites for that are already
+# met: the board lives in a repo, and the allowance survives a fresh process because
+# `--max-invocations` reads `attempts[]`. Both sentences are true about the ENGINE and neither is
+# true END TO END, because nothing carries either artifact back to the repository:
+#
+#   1. `attempts[]` lives in the board FILE. The runner writes it to disk. On the next firing the
+#      clone is fresh, so the file is whatever main holds, and the allowance starts over. A
+#      twelve-invocation campaign becomes twelve invocations PER FIRING.
+#   2. Finished work is merged onto an accumulating branch, `ost/<graph>/trunk`. `ensureTrunk`
+#      creates it from `sandbox.base` when it is not present locally, and in a fresh clone it
+#      never is. So the trunk restarts from main every firing and the previous firing's merged
+#      output is not in it, while the board file, if it were carried, would still call that work
+#      done.
+#
+# Assertions 1 and 2 below pin those two failures, with no wrapper in the picture. They are the
+# reproducer and they are meant to keep passing after the fix, because they describe the runner
+# used bare, which is a thing someone will do again. Assertions 3 to 6 are the fix.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-campaign.XXXXXX")" && pwd -P)
+export OSTOYAE_STATE_DIR="$T/state"
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G() { git -c user.name=r -c user.email=r@x "$@"; }
+
+# `origin` stands in for GitHub. Cloning from it and throwing the clone away is exactly what a
+# Routine firing does, so the rehearsal does that literally rather than simulating it.
+G init -q --bare -b main "$T/origin"
+G clone -q "$T/origin" "$T/seed"
+mkdir -p "$T/seed/boards" "$T/seed/hunt"
+echo "the pursuit" > "$T/seed/README"
+echo "nothing yet" > "$T/seed/hunt/NOTES.md"
+
+# Four work items, each landing a file named after itself, so "did the previous firing's output
+# survive" is a question about which files exist rather than about a log line.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+# executors/fake.sh on a landed prove writes "<item>.txt" at the tree root and commits it.
+# That is its contract, read from the file rather than assumed: an earlier draft of this
+# rehearsal invented a params.fake.write key, which fake.sh ignored, so every check failed and
+# the assertions were reading an empty branch.
+work = [{"id": f"w-{n}", "what": f"land w-{n}.txt", "check": f"test -f w-{n}.txt"}
+        for n in (1, 2, 3, 4)]
+g = {"graph": "demo", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4970},
+     "work": work, "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/seed/boards/demo.json", "w"), indent=2)
+PY
+G -C "$T/seed" add -A && G -C "$T/seed" commit -qm "the board and the pursuit" && G -C "$T/seed" push -q origin main
+
+# One firing, done the way a Routine does it: fresh clone, run, machine gone.
+firing() {   # firing <n> <extra run args...>
+  local n=$1; shift
+  rm -rf "$T/pursuit" "$T/wt"
+  G clone -q "$T/origin" "$T/pursuit"
+  ( cd "$OST" && node run.mjs "$T/pursuit/boards/demo.json" \
+      --exec "bash $OST/executors/fake.sh" "$@" ) > "$T/firing-$n.log" 2>&1
+  echo "$?" > "$T/firing-$n.rc"
+}
+
+count() { python3 -c "import json;print(len(json.load(open('$1'))['attempts']))"; }
+
+# Which items ran, not how many. Four items, an allowance of two: a firing that carries state
+# forward does items 1 and 2 and then items 3 and 4, and a firing that does not carry it does
+# items 1 and 2 twice. Those two outcomes are the same COUNT and a different SET, so the set is
+# what the rehearsal reads.
+ran() { python3 -c "
+import json;g=json.load(open('$1'))
+print(' '.join(sorted(a['of'] for a in g['attempts'])))"; }
+
+echo "== the runner used bare, which is what exists today"
+firing 1 --max-invocations 2
+B1=$(count "$T/pursuit/boards/demo.json"); R1=$(ran "$T/pursuit/boards/demo.json")
+echo "  firing 1: $B1 attempt(s), items: $R1"
+firing 2 --max-invocations 2
+B2=$(count "$T/pursuit/boards/demo.json"); R2=$(ran "$T/pursuit/boards/demo.json")
+echo "  firing 2, after a fresh clone: $B2 attempt(s), items: $R2"
+TOTAL=$((B1 + B2))
+echo "  spent across both firings: $TOTAL agent session(s), against a campaign allowance of 2"
+
+assert "1. REPRODUCER: the second firing redoes the FIRST firing's items, having no record it ran" "
+assert '$R1' == '$R2', ('a firing that carried state would have moved on to different items', '$R1', '$R2')
+assert '$R1'.strip(), 'firing 1 ran nothing, so this rehearsal proves nothing'"
+
+assert "2. REPRODUCER: so the campaign allowance is spent once per firing, not once in total" "
+assert $TOTAL > 2, ('the allowance of 2 was meant to be the whole campaign', $TOTAL)
+assert $TOTAL == 4, ('two firings of two', $TOTAL)"
+
+assert "3. the attempts actually landed, so assertions 1 and 2 are about real work" "
+import json;g=json.load(open('$T/pursuit/boards/demo.json'))
+states={a['state'] for a in g['attempts']}
+assert states == {'done'}, ('every attempt should have landed and passed its check', states)"
+
+assert "4. REPRODUCER: and the accumulating branch restarts from main each firing" "
+import subprocess
+def files(ref):
+    r = subprocess.run(['git','-C','$T/pursuit','ls-tree','-r','--name-only',ref],
+                       capture_output=True, text=True)
+    return set(r.stdout.split())
+have = files('ost/demo/trunk')
+assert have, 'no trunk branch exists at all, so the rehearsal is not testing what it claims'
+landed = sorted(f for f in have if f.endswith('.txt') and f.startswith('w-'))
+assert landed, ('the trunk holds no landed work at all', sorted(have))
+assert len(landed) == $B2, ('the trunk holds only this firing s work, never the previous one s',
+                            landed, $B2)"
+
+
+# ---------------------------------------------------------------- the wrapper
+# Same origin, same board, same fake executor. The only difference is that bin/campaign restores
+# the two artifacts before the runner starts and pushes them back after it stops.
+#
+# --max-invocations 4 is the CAMPAIGN allowance, cumulative across firings. --max-launches 2 is a
+# per-firing work cap, which is what makes a firing stop before the board is finished so there is
+# something for the next one to carry.
+CDIR="$T/campaign"
+cfiring() {   # cfiring <n>
+  local n=$1
+  rm -rf "$CDIR"          # the VM was reclaimed: nothing on its disk survives
+  ( cd "$OST" && bash bin/campaign --repo "$T/origin" --board boards/demo.json \
+      --branch claude/campaign-demo --dir "$CDIR" \
+      --exec "bash $OST/executors/fake.sh" --max-invocations 4 --max-launches 2 \
+    ) > "$T/cfiring-$n.log" 2>&1
+  echo "$?" > "$T/cfiring-$n.rc"
+}
+board_on_branch() { G -C "$T/origin" show "claude/campaign-demo:boards/demo.json" > "$T/onbranch.json" 2>/dev/null; }
+ran_on_branch() { board_on_branch && python3 -c "
+import json;g=json.load(open('$T/onbranch.json'))
+print(' '.join(sorted(a['of'] for a in g['attempts'])))"; }
+count_on_branch() { board_on_branch && python3 -c "
+import json;print(len(json.load(open('$T/onbranch.json'))['attempts']))"; }
+
+echo
+echo "== the same two firings, through bin/campaign"
+cfiring 1; C1=$(count_on_branch); CR1=$(ran_on_branch)
+echo "  firing 1: $C1 attempt(s) on the record, items: $CR1"
+cfiring 2; C2=$(count_on_branch); CR2=$(ran_on_branch)
+echo "  firing 2, after the machine was wiped: $C2 attempt(s) on the record, items: $CR2"
+
+assert "5. the second firing carries the first firing's record instead of starting over" "
+assert '$CR1' != '$CR2', ('firing 2 should have moved on to new items', '$CR1', '$CR2')
+assert set('$CR1'.split()) < set('$CR2'.split()), ('and should still contain the first firing s', '$CR1', '$CR2')"
+
+assert "6. so the campaign allowance is spent once in total, not once per firing" "
+assert $C2 == 4, ('four items, campaign allowance of four', $C2)
+assert $C1 == 2, ('the per-firing work cap should have stopped firing 1 at two', $C1)"
+
+assert "7. the accumulating branch holds every firing's landed work, not just the last one's" "
+import subprocess
+r = subprocess.run(['git','-C','$T/origin','ls-tree','-r','--name-only','ost/demo/trunk'],
+                   capture_output=True, text=True)
+landed = sorted(f for f in r.stdout.split() if f.startswith('w-') and f.endswith('.txt'))
+assert landed == ['w-1.txt','w-2.txt','w-3.txt','w-4.txt'], landed"
+
+cfiring 3; C3=$(count_on_branch)
+echo "  firing 3, with the allowance already spent: $C3 attempt(s) on the record"
+assert "8. a further firing spends nothing, because the allowance is on the record and is read" "
+assert $C3 == 4, ('a firing past the allowance must not launch anything', $C3)
+t=open('$T/cfiring-3.log').read()
+assert 'invocation allowance' in t or 'the queue emptied' in t, t[-600:]"
+
+assert "9. successful publication reports both artifacts and an explicit zero-work count" "
+t=open('$T/cfiring-3.log').read()
+assert '0 session(s) recorded this firing' in t, t[-1000:]
+assert 'published board and ' in t and 'ownership released; runner exit 0' in t, t[-1000:]"
+
+# A runner can reject its arguments before it writes `last_run`.  Seed an intentionally stale
+# reason so the later assertion proves the wrapper does not call that old result this firing's
+# zero-work explanation.
+python3 - "$T/seed/boards/demo.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+g = json.load(open(path))
+g['last_run'] = {'why': 'STALE: a previous machine stopped here', 'next': 'do not repeat this'}
+json.dump(g, open(path, 'w'), indent=2)
+PY
+G -C "$T/seed" add -- boards/demo.json
+G -C "$T/seed" commit -qm "fixture: stale previous run reason"
+
+# A publish rejection is not simulated by stubbing git: the bare origin's pre-receive hook rejects
+# exactly one ref, so the wrapper must preserve both artifacts locally and retain ownership.
+# These are disposable local repositories, and still zero model
+# calls because every firing uses executors/fake.sh.
+new_origin() {   # new_origin <path>
+  local origin=$1
+  G init -q --bare -b main "$origin"
+  G -C "$T/seed" push -q "$origin" main
+}
+reject_ref() {   # reject_ref <bare-origin> <full-ref>
+  python3 - "$1/hooks/pre-receive" "$2" <<'PY'
+import os, stat, sys
+path, rejected = sys.argv[1:]
+open(path, 'w').write(f'''#!/usr/bin/env bash
+set -uo pipefail
+while read -r old new ref; do
+  if [ "$ref" = "{rejected}" ]; then
+    echo "fixture: rejecting $ref" >&2
+    exit 1
+  fi
+done
+exit 0
+''')
+os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+PY
+}
+publication_firing() {   # publication_firing <label> <bare-origin> [runner args...]
+  local label=$1 origin=$2 work="$T/$1-work"
+  shift 2
+  ( cd "$OST" && bash bin/campaign --repo "$origin" --board boards/demo.json \
+      --branch claude/publication-demo --dir "$work" \
+      --exec "bash $OST/executors/fake.sh" --max-invocations 4 --max-launches 1 "$@" \
+    ) > "$T/$label.log" 2>&1
+  echo "$?" > "$T/$label.rc"
+}
+
+echo
+echo "== rejected publication is a continuity failure, with local recovery"
+new_origin "$T/board-reject-origin"
+reject_ref "$T/board-reject-origin" refs/heads/claude/publication-demo
+publication_firing board-reject "$T/board-reject-origin"
+assert "10. a rejected board publication retains ownership and publishes neither board nor trunk" "
+import json, subprocess
+assert open('$T/board-reject.rc').read().strip() != '0'
+t=open('$T/board-reject.log').read()
+assert 'continuity FAILED' in t and 'ownership and local work are retained' in t, t[-1400:]
+remote_board=subprocess.run(['git','-C','$T/board-reject-origin','show',
+                             'claude/publication-demo:boards/demo.json'], capture_output=True)
+assert remote_board.returncode != 0, remote_board.stdout
+remote_trunk=subprocess.run(['git','-C','$T/board-reject-origin','ls-tree','-r','--name-only',
+                             'ost/demo/trunk'], capture_output=True, text=True)
+assert remote_trunk.returncode != 0, remote_trunk.stdout
+local=json.load(open('$T/board-reject-work/pursuit/boards/demo.json'))
+assert len(local['attempts']) == 1, local['attempts']"
+
+new_origin "$T/trunk-reject-origin"
+reject_ref "$T/trunk-reject-origin" refs/heads/ost/demo/trunk
+publication_firing trunk-reject "$T/trunk-reject-origin"
+assert "11. a rejected trunk publication retains ownership and publishes neither board nor trunk" "
+import json, subprocess
+assert open('$T/trunk-reject.rc').read().strip() != '0'
+t=open('$T/trunk-reject.log').read()
+assert 'continuity FAILED' in t and 'ownership and local work are retained' in t, t[-1400:]
+remote=subprocess.run(['git','-C','$T/trunk-reject-origin','show',
+                        'claude/publication-demo:boards/demo.json'],capture_output=True)
+assert remote.returncode != 0, remote.stdout
+local_trunk=subprocess.check_output(['git','-C','$T/trunk-reject-work/pursuit','ls-tree','-r','--name-only',
+                                     'ost/demo/trunk'], text=True)
+assert 'w-1.txt' in local_trunk, local_trunk"
+
+new_origin "$T/runner-outcome-origin"
+reject_ref "$T/runner-outcome-origin" refs/heads/claude/publication-demo
+publication_firing runner-outcome "$T/runner-outcome-origin" --not-a-runner-option
+assert "12. zero work from a rejected runner never reports a stale previous-run reason" "
+assert open('$T/runner-outcome.rc').read().strip() == '2'
+t=open('$T/runner-outcome.log').read()
+assert '0 session(s) recorded this firing; reason: unknown (runner recorded no current-run reason)' in t, t[-1400:]
+assert 'STALE: a previous machine stopped here' not in t, t[-1400:]"
+
+assert "13. a publication failure never replaces the runner's own non-zero outcome" "
+assert open('$T/runner-outcome.rc').read().strip() == '2'
+t=open('$T/runner-outcome.log').read()
+assert 'continuity FAILED' in t, t[-1400:]
+assert 'runner exit 2 is preserved' in t, t[-1400:]"
+
+echo
+if [ "$fails" -eq 0 ]; then echo "  rehearse-campaign: 13/13 assertions pass"; else echo "  rehearse-campaign: $fails failed"; fi
+exit $(( fails > 0 ))

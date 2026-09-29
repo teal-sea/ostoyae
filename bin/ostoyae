@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Resolve npm and local symlinks without GNU readlink. Keep the caller's directory.
+set -eu
+export OSTOYAE_CWD="$PWD"
+launcher="${BASH_SOURCE[0]}"
+while [ -L "$launcher" ]; do
+  launcher_dir="$(cd -P "$(dirname "$launcher")" && pwd)"
+  launcher="$(readlink "$launcher")"
+  case "$launcher" in /*) ;; *) launcher="$launcher_dir/$launcher" ;; esac
+done
+root="$(cd -P "$(dirname "$launcher")/.." && pwd)"
+exec node "$root/cli.mjs" "$@"

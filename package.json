@@ -1,0 +1,55 @@
+{
+  "name": "ostoyae",
+  "version": "0.2.2",
+  "description": "A graph runner for coding agents, where the graph grows from what the agents find. Zero dependencies.",
+  "bin": {
+    "ostoyae": "bin/ostoyae",
+    "ostoyae-msg": "bin/ostoyae-msg"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "files": [
+    "bin/ostoyae",
+    "bin/ostoyae-msg",
+    "bin/campaign",
+    "campaign.mjs",
+    "cli.mjs",
+    "run.mjs",
+    "init.mjs",
+    "ingest.mjs",
+    "demo.mjs",
+    "doctor.mjs",
+    "sandbox.mjs",
+    "lib/",
+    "executors/",
+    "skills/",
+    "viewer/",
+    "examples/",
+    "graph.schema.md",
+    "docs/"
+  ],
+  "scripts": {
+    "test": "node rehearsals/providers.mjs && node rehearsals/process-identity.mjs && node rehearsals/messaging.mjs && node rehearsals/overlap.mjs && node rehearsals/multiple-boards.mjs && node rehearsals/campaign-ownership.mjs && node rehearsals/ingest.mjs && for t in cli land check install onboarding readiness allowance campaign budget claude-usage codex correction crash identity doctor executors gate judge launch-budgets question summary duplicate-park hygiene tools viewer stop; do bash bin/rehearse-$t || exit 1; done && bin/ostoyae demo --no-viewer"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/teal-sea/ostoyae.git"
+  },
+  "keywords": [
+    "coding-agents",
+    "agent-orchestration",
+    "dag",
+    "task-graph",
+    "claude-code",
+    "codex",
+    "muse-code",
+    "grok-code",
+    "zero-dependency"
+  ],
+  "license": "MIT"
+}

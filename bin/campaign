@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Keep the source-checkout entry point aligned with the installed CLI.
+set -eu
+root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec node "$root/campaign.mjs" "$@"

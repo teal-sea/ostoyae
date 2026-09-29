@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+# The two Phase 1 boards, rehearsed with the fake executor: zero model calls, no network, one
+# throwaway pursuit shaped like sphinx, and pytest's own exit code as the judge on a branch.
+#
+#   bin/rehearse-phase1           prints one line per assertion, exits non-zero if any fails
+#
+# Why this exists. wiki/PHASE-1-PROTOCOL.md compares two arms on token spend, and the whole
+# comparison rests on three things a person cannot check by reading two 27 KB JSON files:
+#
+#   - both arms run the SAME MODEL. One model string, in one place, in both boards, and nowhere
+#     else. `mapping.params.model` and `judge.params.model` are the two ways this gets broken by
+#     accident, because a cheaper mapper is the obvious economy and it makes arm B a different
+#     model. Assertion 2 is the guard, and it is the reason this file exists at all.
+#   - the arms differ ONLY in the graph mechanism. Same pursuit, same base, same tools, same
+#     env_passthrough, same operator notes, same 15 items in the same order, same checks.
+#     Anything else that differs is a confound the protocol did not name.
+#   - arm A is actually flat. Every Ostoyae cell starts from the trunk, not from `sandbox.base`,
+#     so 15 items run through one board share their finished work whether the board has an edge
+#     in it or not. Assertions 8 and 9 measure that: run whole, the last attempt's branch carries
+#     other items' files; split into fifteen one-item graphs it carries only its own. That is why
+#     the protocol's arm A is the split, and arm A-trunk is the same board run whole.
+#
+#    1. both boards carry the same 15 SWE-bench Verified instance ids, in the same order
+#    2. one model, in one place, in both boards, and nowhere else
+#    3. the sandbox is identical apart from `contract`
+#    4. arm A is plain and carries no mechanism; arm B carries mapping, judge and ontology
+#    5. no board declares a tool doctor cannot resolve: not a bare interpreter, not a flag
+#    6. no item carries `needs`, and no board carries an authored edge
+#    7. doctor is ready to launch on both boards, retargeted at a throwaway pursuit
+#    8. arm A run whole: 15 prove attempts, no map, no verify, every check ran on its branch
+#    9. arm A run whole shares the trunk; split into 15 one-item graphs it does not
+#   10. arm B: a map attempt precedes every prove attempt, and the judge verifies what it finds
+#   11. a failing check fails the item, with pytest's own words on the record
+#   12. with env_passthrough emptied the check cannot import the package
+#   13. a failed check is retried, and the retry lands
+#   14. with the ontology on an untyped proposal is dropped; a typed helper claim is absorbed
+#
+# The pursuit is built to satisfy the boards' declared checks, so what an assertion proves is
+# that the engine runs this shape of check and gates on it, not that sphinx passes.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+FAKE="bash $OST/executors/fake.sh"
+A=$OST/examples/swebench-phase1-arm-a.json
+B=$OST/examples/swebench-phase1-arm-b.json
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-phase1.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+ran=0
+skipped=0
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+skip() { echo "  skip  $2"; skipped=$((skipped+$1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+explain() { python3 -c "$1"; }
+have() { for c in "$@"; do command -v "$c" >/dev/null 2>&1 || return 1; done; }
+
+echo "== the two boards, as data"
+assert "1. both boards carry the same 15 instance ids, in the same order" "
+import json
+a=json.load(open('$A')); b=json.load(open('$B'))
+ia=[w['id'] for w in a['work']]; ib=[w['id'] for w in b['work']]
+assert ia==ib, (ia,ib)
+assert len(ia)==15, ia
+assert all(i.startswith('w-sphinx-') for i in ia), ia
+assert [w['what'] for w in a['work']]==[w['what'] for w in b['work']], 'the prompts differ'
+assert [w['check'] for w in a['work']]==[w['check'] for w in b['work']], 'the gates differ'"
+assert "2. one model, in one place, in both boards, and nowhere else" "
+import json
+a=json.load(open('$A')); b=json.load(open('$B'))
+ma=a['defaults']['model']; mb=b['defaults']['model']
+assert ma==mb, (ma,mb)
+for name,g in (('arm-a',a),('arm-b',b)):
+  for w in g['work']:
+    assert 'model' not in (w.get('params') or {}), (name,w['id'],'per-item model')
+  for key in ('mapping','judge'):
+    p=(g.get(key) or {}).get('params') or {}
+    assert 'model' not in p, (name,key+'.params.model breaks the arms being one model')
+  for kind,spec in ((g.get('ontology') or {}).get('kinds') or {}).items():
+    assert 'model' not in spec, (name,kind)
+  assert json.dumps(g).count('\"model\"')==1, (name,'model named more than once')"
+assert "3. the sandbox is identical apart from contract" "
+import json
+a=json.load(open('$A'))['sandbox']; b=json.load(open('$B'))['sandbox']
+assert a.get('contract')=='plain', a.get('contract')
+assert b.get('contract') is None, b.get('contract')
+for k in ('repo','root','base','port_base','env_passthrough','tools','notes'):
+  assert a.get(k)==b.get(k), (k, a.get(k), b.get(k))
+assert set(a)-{'contract'}==set(b), (sorted(a),sorted(b))
+assert set(a['env_passthrough'])=={'VIRTUAL_ENV','PYTHONPATH'}, a['env_passthrough']
+assert [t['cmd'] for t in a['tools']]==['pytest','flake8','mypy'], a['tools']
+assert all(t.get('what') for t in a['tools']), a['tools']
+assert 'PYTHONPATH' in a['notes'] and 'tests/' in a['notes'], a['notes']"
+assert "4. arm A carries no mechanism; arm B carries mapping, judge and ontology" "
+import json
+a=json.load(open('$A')); b=json.load(open('$B'))
+for k in ('mapping','judge','ontology'):
+  assert k not in a, ('arm A carries '+k)
+  assert k in b, ('arm B is missing '+k)
+assert b['mapping']['what'].strip(), 'mapping.what is empty and the runner refuses that'
+assert b['judge']['verify'].strip(), 'judge.verify is empty and there is no default'
+assert '{id}' in b['judge']['default_check'], b['judge']['default_check']
+assert b['judge']['require_check'] is True, b['judge']
+assert set(b['ontology']['kinds'])=={'helper','fixture'}, list(b['ontology']['kinds'])
+for kind,spec in b['ontology']['kinds'].items():
+  assert spec['claim'] and all(isinstance(x,str) for x in spec['claim']), (kind,spec)
+  assert '{' in spec['id'] and '{' in spec['what'], (kind,spec)
+  assert spec.get('check'), (kind,'a kind with no check is a task done on the agent word')
+# Equal concurrency in both arms is a requirement, not a knob: wiki/DECISION-PROTOCOL.md §5
+# froze it, and §6 says why — a serial head-on baseline hands the graph a wall-clock win that
+# flat parallelism gets for free.
+assert a['concurrency']==b['concurrency']==3, (a['concurrency'],b['concurrency'])
+assert a['max_attempts']==b['max_attempts']==2, (a['max_attempts'],b['max_attempts'])"
+assert "5. no declared tool is a bare interpreter or a flag doctor would read as a script" "
+import json
+bare={'bash','sh','zsh','node','python','python3','ruby','perl','env'}
+for f in ('$A','$B'):
+  for t in json.load(open(f))['sandbox']['tools']:
+    w=t['cmd'].split()
+    assert w[0] not in bare, (f,t['cmd'],'bare interpreter')
+    assert len(w)==1 or not w[1].startswith('-'), (f,t['cmd'],'doctor reads the flag as the script')
+    assert '/' not in w[0], (f,t['cmd'],'doctor resolves a relative path against its own cwd')"
+assert "6. no item carries needs, and no board carries an authored edge" "
+import json
+for f in ('$A','$B'):
+  g=json.load(open(f))
+  assert g['edges']==[], (f,'an authored edge puts the answer in the graph')
+  assert g['attempts']==[], (f,'attempts are append-only and this board has not run')
+  for w in g['work']:
+    assert w['needs']==[], (f,w['id'],'an authored need puts the answer in the graph')
+    assert w['check'], (f,w['id'])"
+
+echo "== a throwaway pursuit shaped like sphinx, and the held-out checks"
+if have pytest git; then
+  P="$T/sphinx"; mkdir -p "$P/sphinx" "$P/tests" "$T/checks" "$T/patches"
+  printf '__version__ = "0.0.0-rehearsal"\n' > "$P/sphinx/__init__.py"
+  printf '' > "$P/tests/.gitkeep"
+  printf '__pycache__\n.venv\n' > "$P/.gitignore"
+  (cd "$P" && git init -q -b main . && git add -A \
+    && git -c user.name=r -c user.email=r@x commit -qm start) >/dev/null
+
+  # One check per item, in the shape the protocol specifies: the held-out test patch is applied
+  # to the branch's own checkout and only then does pytest run. The patch lives outside the
+  # pursuit, so no cell can read it, which is the whole reason the gate is a script and not a
+  # bare `pytest` line.
+  python3 - "$A" "$T" <<'PY'
+import json, sys
+board, T = sys.argv[1], sys.argv[2]
+for w in json.load(open(board))["work"]:
+    iid = w["check"].rsplit("/", 1)[-1][:-3]          # .../<instance_id>.sh
+    slug = w["id"].replace("-", "_")
+    body = (f"import sphinx\nimport os\n\n\ndef test_{slug}():\n"
+            f"    assert sphinx.__name__ == \"sphinx\"\n"
+            f"    assert os.path.exists(\"{w['id']}.txt\")\n")
+    lines = body.splitlines()
+    patch = (f"diff --git a/tests/test_{slug}.py b/tests/test_{slug}.py\n"
+             "new file mode 100644\n--- /dev/null\n"
+             f"+++ b/tests/test_{slug}.py\n@@ -0,0 +1,{len(lines)} @@\n"
+             + "".join("+" + l + "\n" for l in lines))
+    open(f"{T}/patches/{iid}.test.patch", "w").write(patch)
+    open(f"{T}/checks/{iid}.sh", "w").write(
+        "set -eu\n"
+        f"git apply {T}/patches/{iid}.test.patch\n"
+        f"exec pytest -q tests/test_{slug}.py::test_{slug}\n")
+PY
+  # retarget <board> <name> [python-edit]: the shipped board, pointed at the throwaway pursuit
+  # and the throwaway checks. Nothing else about it is touched.
+  retarget() { python3 - "$1" "$T/$2.json" "$T/sphinx" "$2" "$T" "${3:-pass}" <<'PY'
+import json, sys
+src, dst, repo, name, T, edit = sys.argv[1:7]
+g = json.load(open(src))
+g["graph"] = name
+g["sandbox"]["repo"] = repo
+g["sandbox"]["root"] = f"{T}/wt-{name}"
+# The shipped board pins `base` to a sphinx commit, which no throwaway pursuit has. Note that
+# doctor does NOT catch that on the real board: `git rev-parse --verify <40-hex>` succeeds for
+# any well-formed sha whether the object is present or not, so an absent pinned base reads as
+# `ok pursuit` and every attempt then dies in provisioning. The protocol's pre-flight runs
+# `rev-parse --verify <base>^{commit}`, which is the form that answers.
+g["sandbox"]["base"] = "main"
+for w in g["work"]:
+    w["check"] = w["check"].replace("/home/tom/swebench/phase1/checks", f"{T}/checks")
+exec(edit)
+json.dump(g, open(dst, "w"), indent=2)
+PY
+  }
+
+  retarget "$A" arm-a
+  retarget "$B" arm-b
+  node doctor.mjs "$T/arm-a.json" > "$T/a-doctor.log" 2>&1; echo "  doctor arm A exit $?"
+  node doctor.mjs "$T/arm-b.json" > "$T/b-doctor.log" 2>&1; echo "  doctor arm B exit $?"
+  assert "7. doctor is ready to launch on both boards, every declared tool resolved" "
+for f,arm in (('$T/a-doctor.log','A'),('$T/b-doctor.log','B')):
+  t=open(f).read()
+  assert 'ready to launch' in t, (arm,t[-600:])
+  assert not [l for l in t.splitlines() if 'FAIL' in l], (arm,t)
+  rows=[l for l in t.splitlines() if ' tool ' in l and 'tool answers' not in l]
+  assert len(rows)==3, (arm,rows)
+b=open('$T/b-doctor.log').read()
+assert 'every active item has a check' in b, b
+assert 'ontology' in b and 'helper(module, symbol, signature)' in b, b"
+
+  PYTHONPATH=. node run.mjs "$T/arm-a.json" --exec "$FAKE" > "$T/a-run.log" 2>&1
+  echo "  arm A run whole exit $?"
+  assert "8. arm A run whole: 15 prove attempts, no map, no verify, every check on its branch" "
+import json; g=json.load(open('$T/arm-a.json'))
+a=g['attempts']
+assert len(a)==15, [(x['id'],x['of'],x['state']) for x in a]
+assert all(x['state']=='done' for x in a), [(x['id'],x['state']) for x in a]
+assert {x.get('kind') for x in a}=={'prove'}, {x.get('kind') for x in a}
+c=[x['result']['check'] for x in a]
+assert all(x['ok'] for x in c), c
+assert all(x['on'].startswith('ost/'+g['graph']+'/') for x in c), c
+assert all('.sh' in x['cmd'] and x['cmd'].startswith('bash ') for x in c), c"
+
+  # The trunk, measured. Run whole, the last cell inherits every earlier item's work; split into
+  # one-item graphs it inherits nothing. Same board, same executor, same checks.
+  python3 - "$T" "$A" <<'PY'
+import json, sys
+T, board = sys.argv[1], sys.argv[2]
+g = json.load(open(f"{T}/arm-a.json"))
+for w in g["work"]:
+    one = dict(g, graph=f"solo-{w['id']}", work=[w], edges=[], attempts=[])
+    one["sandbox"] = dict(g["sandbox"], root=f"{T}/wt-solo-{w['id']}")
+    json.dump(one, open(f"{T}/solo-{w['id']}.json", "w"), indent=2)
+PY
+  for id in w-sphinx-8548 w-sphinx-9591; do
+    PYTHONPATH=. node run.mjs "$T/solo-$id.json" --exec "$FAKE" > "$T/solo-$id.log" 2>&1
+    echo "  arm A split, $id exit $?"
+  done
+  git -C "$T/sphinx" ls-tree -r --name-only "ost/arm-a/$(python3 -c "
+import json; print(json.load(open('$T/arm-a.json'))['attempts'][-1]['id'])")" > "$T/whole-tree.txt" 2>&1
+  git -C "$T/sphinx" ls-tree -r --name-only "ost/solo-w-sphinx-9591/$(python3 -c "
+import json; print(json.load(open('$T/solo-w-sphinx-9591.json'))['attempts'][-1]['id'])")" > "$T/solo-tree.txt" 2>&1
+  assert "9. run whole the arm shares the trunk; split into one-item graphs it does not" "
+whole=[l for l in open('$T/whole-tree.txt').read().split() if l.endswith('.txt')]
+solo=[l for l in open('$T/solo-tree.txt').read().split() if l.endswith('.txt')]
+# At concurrency 3 the wave that starts before anything settles inherits nothing, so the count
+# is not 15; what matters is that it is more than the item's own one file.
+assert len(whole)>1, whole
+assert solo==['w-sphinx-9591.txt'], solo
+import json
+for i in ('w-sphinx-8548','w-sphinx-9591'):
+  g=json.load(open('$T/solo-%s.json'%i))
+  assert len(g['work'])==1 and g['work'][0]['id']==i, g['work']
+  assert len(g['attempts'])==1 and g['attempts'][0]['state']=='done', g['attempts']
+  assert g['attempts'][0]['result']['check']['ok'], g['attempts'][0]['result']"
+
+  # Arm B, with the fake mapping every item and the judge reading what it finds. `--max-launches`
+  # keeps the rehearsal short: the mechanism is what is under test, not fifteen fake maps.
+  retarget "$B" arm-b-run 'for w in g["work"]:
+    w.setdefault("params", {})["fake"] = {"map": {"map": {"settles": "the issue is fixed and the held-out test passes", "cost": "small"}}}'
+  PYTHONPATH=. node run.mjs "$T/arm-b-run.json" --exec "$FAKE" --max-launches 4 > "$T/b-run.log" 2>&1
+  echo "  arm B run exit $?"
+  assert "10. arm B: every item is mapped before it is proved, and prove follows the map" "
+import json; g=json.load(open('$T/arm-b-run.json'))
+a=g['attempts']
+assert a, 'nothing ran'
+assert {x['kind'] for x in a}=={'map','prove'}, [(x['id'],x['kind']) for x in a]
+assert len(a)==4, [(x['id'],x['of']) for x in a]
+assert all(x['state']=='done' for x in a), [(x['id'],x['state']) for x in a]
+mapped=[w for w in g['work'] if w.get('map')]
+assert all(w['map']['settles'] for w in mapped), mapped
+# A map attempt that proposed nothing leaves its item ready to prove in the same run, and
+# ready() returns prove-ready items first, so the fourth launch is a prove on a mapped item.
+# What must never happen is a prove on an item nobody mapped.
+first={}
+for x in a: first.setdefault((x['of'],x['kind']), x['id'])
+for x in a:
+  if x['kind']=='prove':
+    m=first.get((x['of'],'map'))
+    assert m and m < x['id'], (x['id'],x['of'],'proved before it was mapped')
+    assert 'Map (' in x['what'], 'the prover was not told what the mapper found'
+assert [x for x in a if x['kind']=='map'], 'nothing was mapped'
+assert [x for x in a if x['kind']=='prove'], 'no prove followed a map that proposed nothing'"
+
+  # A check that says no. The pursuit is copied and its package broken, so `import sphinx`
+  # still resolves and the assertion inside the held-out test is what fails.
+  cp -r "$P" "$T/broken" && rm -rf "$T/broken/.git"
+  printf 'raise ImportError("rehearsal: this build of sphinx is broken")\n' > "$T/broken/sphinx/__init__.py"
+  (cd "$T/broken" && git init -q -b main . && git add -A \
+    && git -c user.name=r -c user.email=r@x commit -qm start) >/dev/null
+  # Derived from the SHIPPED board, not from $T/arm-a.json: the runner writes its attempts back
+  # into the file it ran, so a board copied from that one arrives with fifteen done attempts and
+  # its item already satisfied.
+  retarget "$A" arm-a-broken 'g["work"]=g["work"][:1]
+g["sandbox"]["repo"]=f"{T}/broken"'
+  retarget "$A" arm-a-noenv 'g["work"]=g["work"][:1]
+g["sandbox"]["env_passthrough"]=[]'
+  PYTHONPATH=. node run.mjs "$T/arm-a-broken.json" --exec "$FAKE" > "$T/broken.log" 2>&1
+  echo "  broken build exit $?"
+  PYTHONPATH=. node run.mjs "$T/arm-a-noenv.json" --exec "$FAKE" > "$T/noenv.log" 2>&1
+  echo "  env_passthrough emptied exit $?"
+  assert "11. a failing check fails the item, with pytest's own words on the record" "
+import json; g=json.load(open('$T/arm-a-broken.json'))
+a=g['attempts']
+assert a and all(x['state']=='failed' for x in a), [(x['id'],x['state']) for x in a]
+r=a[0]['result']
+assert r['check']['ok'] is False, r['check']
+assert r['check']['cmd'].startswith('bash '), r['check']
+assert [l for l in r['output'] if 'this build of sphinx is broken' in l], r['output']"
+  assert "12. with env_passthrough emptied the check cannot import the package" "
+import json; g=json.load(open('$T/arm-a-noenv.json'))
+a=g['attempts']
+assert a and all(x['state']=='failed' for x in a), [(x['id'],x['state']) for x in a]
+r=a[0]['result']
+assert r['check']['ok'] is False, r['check']
+assert [l for l in r['output'] if 'ModuleNotFoundError' in l or 'No module named' in l], r['output']"
+
+  # A retry after a failed check, which is the whole reason `check` was built:
+  # wiki/EVALUATION-VERDICT.md §5 records that S1's retry never fired because every attempt
+  # exited 0 and the runner had no check of its own, so S1 was S0 at a different seed. The gate
+  # here says no once and then yes, so the retry has something to follow.
+  mkdir -p "$T/flip"
+  retarget "$A" arm-a-retry 'g["work"]=g["work"][:1]
+g["work"][0]["check"]=f"bash {T}/checks/flip.sh"'
+  cat > "$T/checks/flip.sh" <<FLIP
+set -eu
+if [ -e "$T/flip/seen" ]; then exec pytest -q --version >/dev/null; fi
+touch "$T/flip/seen"
+echo "rehearsal: the gate says no on the first attempt"
+exit 1
+FLIP
+  PYTHONPATH=. node run.mjs "$T/arm-a-retry.json" --exec "$FAKE" > "$T/retry.log" 2>&1
+  echo "  retry after a failed check exit $?"
+  assert "13. a failed check is retried, and the retry lands" "
+import json; g=json.load(open('$T/arm-a-retry.json'))
+a=g['attempts']
+assert len(a)==2, [(x['id'],x['state']) for x in a]
+assert [x['state'] for x in a]==['failed','done'], [(x['id'],x['state']) for x in a]
+assert a[1]['from']==a[0]['id'], (a[1].get('from'), a[0]['id'])
+assert a[0]['result']['check']['ok'] is False and a[1]['result']['check']['ok'] is True, [x['result']['check'] for x in a]
+assert [l for l in a[0]['result']['output'] if 'the gate says no' in l], a[0]['result']['output']"
+
+  # The ontology, at the door. The fake's own wall proposes a sentence with an id it chose, which
+  # is exactly what the ontology refuses, so that attempt is `failed` and not `walled`. A typed
+  # helper claim in the same shape lands, under the id the runner assigns from the claim.
+  retarget "$B" arm-b-untyped 'g["work"]=g["work"][:1]
+for w in g["work"]:
+    w.setdefault("params", {})["fake"] = {"map": "wall"}'
+  retarget "$B" arm-b-typed 'g["work"]=g["work"][:1]
+for w in g["work"]:
+    w.setdefault("params", {})["fake"] = {"map": {"wall": "sphinx has no one place to render a field-list type, so each of these items would write its own",
+      "work": [{"id": "mine", "kind": "helper", "claim": {"module": "sphinx.util.typing", "symbol": "render_field_type",
+                 "signature": "def render_field_type(env, text: str) -> list[Node]"},
+                "evidence": {"why": "three items in this board edit the same routine", "searched": "grepped sphinx/util and sphinx/domains"}}],
+      "edges": [{"from": "mine", "to": w["id"], "why": "the item has nothing to call"}]}}'
+  PYTHONPATH=. node run.mjs "$T/arm-b-untyped.json" --exec "$FAKE" > "$T/untyped.log" 2>&1
+  echo "  untyped proposal exit $?"
+  PYTHONPATH=. node run.mjs "$T/arm-b-typed.json" --exec "$FAKE" > "$T/typed.log" 2>&1
+  echo "  typed claim exit $?"
+  assert "14. an untyped proposal is dropped; a typed helper claim is absorbed with the runner's id" "
+import json
+u=json.load(open('$T/arm-b-untyped.json'))
+ua=[x for x in u['attempts'] if x['kind']=='map']
+assert ua and ua[0]['state']=='failed', [(x['id'],x['kind'],x['state']) for x in u['attempts']]
+assert [n for n in ua[0]['result'].get('notes',[]) if 'kind' in n and 'not one of' in n], ua[0]['result']
+assert len(u['work'])==1, [w['id'] for w in u['work']]
+t=json.load(open('$T/arm-b-typed.json'))
+ta=[x for x in t['attempts'] if x['kind']=='map']
+assert ta and ta[0]['state']=='walled', [(x['id'],x['kind'],x['state']) for x in t['attempts']]
+prop=[w for w in t['work'] if w.get('status')=='proposed']
+assert len(prop)==1, [ (w['id'],w.get('status')) for w in t['work']]
+p=prop[0]
+assert p['id']=='w-helper-sphinx-util-typing-render-field-type', p['id']
+assert p['kind']=='helper' and p['claim_hash'], p
+# The runner shell-quotes every claim value it puts in a check, so the kind's check has to take
+# the module and the symbol as argv and never interpolate them into python source: the obvious
+# spelling, \`python3 -c \"from {module} import {symbol}\"\`, comes out as
+# \`from 'sphinx.util.typing' import 'render_field_type'\` and is a SyntaxError. Found here.
+assert p['check'].endswith(\" 'sphinx.util.typing' 'render_field_type'\"), p['check']
+import subprocess
+assert subprocess.run(['sh','-c',p['check']]).returncode==1, 'the check does not run as a shell command'
+assert [x for x in t['attempts'] if x['kind']=='verify'], 'the judge did not read the proposal'"
+else
+  skip 8 "7-14. pytest or git is not on PATH"
+fi
+
+echo ""
+if [ "$fails" = 0 ]; then
+  echo "  $ran assertion(s) ran, all passing${skipped:+, $skipped skipped}"
+else
+  echo "  $ran assertion(s) ran, $fails FAILED${skipped:+, $skipped skipped}"
+fi
+[ -n "${KEEP:-}" ] && echo "  kept $T"
+exit $((fails > 0))

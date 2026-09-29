@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Git commits in cells and on the trunk work without a configured user identity.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+OST=$PWD
+T=$(mktemp -d "${TMPDIR:-/tmp}/rehearse-identity.XXXXXX")
+trap 'rm -rf "$T"' EXIT
+export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+mkdir -p "$HOME"
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
+git init -q -b main "$T/pursuit"
+echo start > "$T/pursuit/README"
+git -C "$T/pursuit" add README
+git -C "$T/pursuit" -c user.name=fixture -c user.email=fixture@invalid commit -qm start
+python3 - "$T" <<'PY'
+import json, sys
+t = sys.argv[1]
+board = {'graph': 'identity', 'concurrency': 2, 'max_attempts': 1,
+  'sandbox': {'repo': f'{t}/pursuit', 'root': f'{t}/cells', 'base': 'main', 'port_base': 5400},
+  'work': [{'id': f'w-{i}', 'what': f'write {i}', 'params': {'fake': {'sleep': 1}}}
+           for i in ('one', 'two', 'three')], 'edges': [], 'attempts': []}
+with open(f'{t}/board.json', 'w') as f: json.dump(board, f)
+PY
+cat > "$T/stub.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+python3 -c 'import json,sys; a=json.load(sys.stdin); open(a["of"]+".txt","w").write(a["id"]+"\n")' 
+git add w-three.txt
+git commit -qm 'stub work'
+SH
+chmod +x "$T/stub.sh"
+node run.mjs "$T/board.json" --exec "bash $OST/executors/fake.sh" --max-launches 2 > "$T/fake.log" 2>&1
+node run.mjs "$T/board.json" --exec "bash $T/stub.sh" --max-launches 1 > "$T/stub.log" 2>&1
+python3 - "$T" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+t = Path(sys.argv[1]); repo = t / 'pursuit'
+board = json.loads((t / 'board.json').read_text())
+attempts = board['attempts']
+assert len(attempts) == 3 and all(a['state'] == 'done' for a in attempts), attempts
+trunk = 'ost/identity/trunk'
+for name in ('one', 'two', 'three'):
+    assert subprocess.check_output(['git', '-C', str(repo), 'show', f'{trunk}:w-{name}.txt'])
+log = subprocess.check_output(['git', '-C', str(repo), 'log', trunk, '--format=%an <%ae>'], text=True).splitlines()
+for a in attempts:
+    agent = 'stub' if a['of'] == 'w-three' else 'fake'
+    expected = f'{agent} {a["id"]} <{a["id"]}@ostoyae.invalid>'
+    assert expected in log, (expected, log)
+assert 'ostoyae <ostoyae@invalid>' in log, log
+assert subprocess.run(['git', '-C', str(repo), 'config', '--local', '--get-regexp', '^user\\.'],
+                      capture_output=True).returncode == 1
+print('  ok    identity: fake and custom cell commits, trunk merge, no local user config')
+PY

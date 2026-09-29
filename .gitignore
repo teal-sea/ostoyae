@@ -1,0 +1,12 @@
+node_modules/
+wt/
+*.local.json
+.DS_Store
+# Liveness, not the record. A runner writes <graph>.run.json while it is up and removes it on the
+# way out; one left behind is how the next run knows the last one died. Never committed.
+*.run.json
+*.live.json
+*.json.tmp
+
+# agent worktrees, never part of the repo
+.claude/worktrees/

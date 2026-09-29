@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# A declared tool that is present but not answering, rehearsed. Zero model calls, no network.
+#
+#   bin/rehearse-tools            prints one line per assertion, exits non-zero if any fails
+#
+# Why this exists. On 2026-09-05 axle.axiommath.ai went SERVFAIL for about half an hour while a
+# batch was live. `doctor` said the tool was fine, because the script was on disk and that is all
+# it looked at. Three cells each spent turns discovering the outage, and one reported the network
+# failure to its model as a Lean compile error. A probe answers that before the launch.
+#
+#   1. a tool whose probe exits 0 reports `tool answers` and its first line of output
+#   2. a tool whose probe exits non-zero WARNS, naming the exit code and what it said
+#   3. a probe that hangs is cut off at probe_timeout_ms and warns, rather than hanging doctor
+#   4. a probe whose command does not exist warns with the shell's own words, not a crash
+#   5. NONE of these block: doctor still exits 0 and still says ready to launch
+#   6. one `tool answers` row per probed tool; a tool with no probe keeps its plain row
+#
+# And what doctor resolves a declared tool TO, because it used to read the flag as the script:
+#
+#   7. an interpreter's flags are skipped: `python3 -m pytest` and `node --test` resolve the real
+#      target instead of `-m` and `--test`
+#   8. widening only: every spelling doctor accepted before still passes, unchanged
+#   9. a target that is genuinely absent is still refused, and the row names the target doctor
+#      resolved rather than the flag in front of it
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-tools.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+ran=0
+skipped=0
+# `ran` is counted rather than hardcoded. The summary used to print "6 assertions, all passing"
+# from a literal, which would keep saying six after an assertion was added or skipped, and a
+# rehearsal that reports green for what it did not run is the failure `for r in bin/rehearse-*`
+# is supposed to catch.
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+skip() { echo "  skip  $2"; skipped=$((skipped+$1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+have_module() { python3 -c "import $1" >/dev/null 2>&1; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README \
+  && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+# Four scripts standing in for four wrappers: one that answers, one whose service is down, one
+# that hangs, and one that is present but not executable by the probe as written.
+mkdir -p "$T/bin"
+printf '#!/bin/sh\necho "AXLE_OK: true"\n'                                        > "$T/bin/live"
+printf '#!/bin/sh\necho "AXLE_REACHED: false: could not resolve host" >&2\nexit 3\n' > "$T/bin/down"
+printf '#!/bin/sh\nsleep 30\n'                                                    > "$T/bin/hang"
+printf '#!/bin/sh\necho quiet\n'                                                  > "$T/bin/quiet"
+chmod +x "$T/bin/live" "$T/bin/down" "$T/bin/hang" "$T/bin/quiet"
+
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+tools = [
+  {"cmd": f"bash {T}/bin/live",  "what": "answers",        "probe": f"sh {T}/bin/live"},
+  {"cmd": f"bash {T}/bin/down",  "what": "service is down","probe": f"sh {T}/bin/down"},
+  {"cmd": f"bash {T}/bin/hang",  "what": "hangs",          "probe": f"sh {T}/bin/hang", "probe_timeout_ms": 700},
+  {"cmd": f"bash {T}/bin/quiet", "what": "probe is broken","probe": f"{T}/" + "long-directory-name-" * 8 + "/no-such-thing-here"},
+  {"cmd": f"bash {T}/bin/quiet", "what": "no probe at all"},
+]
+g = {"graph": "rehearse-tools", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main",
+                 "port_base": 4970, "tools": tools},
+     "work": [{"id": "w-one", "what": "nothing", "check": "true", "needs": []}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/tools.json", "w"), indent=2)
+PY
+
+echo "== doctor on a board whose tools are present but not all answering"
+start=$(date +%s)
+node doctor.mjs "$T/tools.json" > "$T/doc.log" 2>&1; rc=$?
+took=$(( $(date +%s) - start ))
+echo "  exit $rc, ${took}s"
+
+assert "1. a probe that exits 0 reports 'tool answers' with what it said" "
+t=open('$T/doc.log').read()
+assert 'tool answers' in t and 'AXLE_OK: true' in t, t"
+assert "2. a probe that exits non-zero warns, naming the exit code and the reason" "
+t=open('$T/doc.log').read()
+line=[l for l in t.splitlines() if 'probe exit 3' in l]
+assert line, t
+assert 'could not resolve host' in line[0], line"
+assert "3. a hanging probe is cut off at probe_timeout_ms, not left to hang doctor" "
+t=open('$T/doc.log').read()
+assert 'did not answer within 700 ms' in t, t
+assert $took < 20, 'doctor took ${took}s; the 30s hang was not cut off'"
+assert "4. a probe whose command does not exist warns with the shell's own words" "
+t=open('$T/doc.log').read()
+line=[l for l in t.splitlines() if 'probe exit 127' in l]
+assert line, t
+assert any(message in line[0] for message in ['not found', 'No such file or directory']), line
+assert 'no-such-thing-here' in line[0], line
+assert 'ready to launch' in t, t[-400:]"
+assert "5. none of it blocks: doctor exits 0 and still says ready to launch" "
+t=open('$T/doc.log').read()
+assert $rc == 0, 'doctor exited $rc; a probe must never block a launch'
+assert 'blocking' not in t, t[-400:]
+assert 'ready to launch' in t, t[-400:]"
+assert "6. one 'tool answers' row per probed tool, and the unprobed tool keeps its plain row" "
+t=open('$T/doc.log').read()
+answers=[l for l in t.splitlines() if 'tool answers' in l]
+assert len(answers)==4, ('five tools, four probed, so four rows', answers)
+plain=[l for l in t.splitlines() if 'tool ' in l and 'tool answers' not in l and 'bin/' in l]
+assert len(plain)==5, ('every tool still gets its presence row', plain)
+assert [l for l in plain if 'no probe at all' in l], plain"
+
+echo "== what doctor resolves a declared tool to"
+# The accepted board: every spelling that must pass. The first four are the shapes the old
+# resolution accepted: words[0] for a plain command, words[1] behind an interpreter, and they
+# are here so this rehearsal fails if the change ever narrows what a board may declare. The rest
+# are the flag-bearing spellings it wrongly refused.
+if have_module pytest; then PYTEST_TOOL='{"cmd": "python3 -m pytest", "what": "the reported case"},'; fi
+python3 - "$T" "${PYTEST_TOOL:-}" <<'MKOK'
+import json, sys
+T, extra = sys.argv[1], sys.argv[2]
+kept = [
+  {"cmd": f"{T}/bin/live",      "what": "a bare path"},
+  {"cmd": f"bash {T}/bin/live", "what": "an interpreter and a script path"},
+  {"cmd": f"sh {T}/bin/quiet",  "what": "another interpreter and script"},
+  {"cmd": "git status",         "what": "a plain command on PATH"},
+]
+widened = json.loads("[" + extra + '{"cmd": "python3 -m json.tool", "what": "a stdlib module"},'
+                     '{"cmd": "python3 -u -m json.tool", "what": "a flag before -m"},'
+                     '{"cmd": "node --test", "what": "nothing but a flag: node itself runs"}]')
+g = {"graph": "rehearse-resolve-ok", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-ok", "base": "main",
+                 "port_base": 4975, "tools": kept + widened},
+     "work": [{"id": "w-one", "what": "nothing", "check": "true"}], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/resolve-ok.json", "w"), indent=2)
+json.dump({"kept": [t["cmd"] for t in kept], "widened": [t["cmd"] for t in widened]},
+          open(f"{T}/resolve-ok.expect.json", "w"))
+MKOK
+node doctor.mjs "$T/resolve-ok.json" > "$T/resolve-ok.log" 2>&1; rc2=$?
+echo "  doctor on the spellings that must resolve: exit $rc2"
+assert "7. an interpreter's flags are skipped: -m's module and a flag-only command both resolve" "
+import json
+t=open('$T/resolve-ok.log').read()
+for cmd in json.load(open('$T/resolve-ok.expect.json'))['widened']:
+  assert [l for l in t.splitlines() if ' ok ' in l and cmd+' ' in l], (cmd, t)
+assert 'is not there' not in t, t
+assert 'cannot import' not in t, t"
+assert "8. widening only: every spelling doctor accepted before is still accepted, none blocks" "
+import json
+t=open('$T/resolve-ok.log').read()
+assert $rc2 == 0, 'doctor exited $rc2 on a board whose every tool resolves'
+assert 'ready to launch' in t, t[-400:]
+assert not [l for l in t.splitlines() if 'FAIL' in l], t
+for cmd in json.load(open('$T/resolve-ok.expect.json'))['kept']:
+  assert [l for l in t.splitlines() if ' ok ' in l and cmd+' ' in l], (cmd, t)"
+if have_module pytest; then
+  assert "7b. \`python3 -m pytest\`, the reported case, is accepted rather than read as -m" "
+t=open('$T/resolve-ok.log').read()
+assert [l for l in t.splitlines() if ' ok ' in l and 'python3 -m pytest ' in l], t
+assert '-m is not there' not in t, t"
+else
+  skip 1 "7b. python3 -m pytest: pytest does not import for this python3"
+fi
+
+# The refused board, separately, because one FAIL row makes doctor refuse the whole file.
+python3 - "$T" <<'MKBAD'
+import json, sys
+T = sys.argv[1]
+tools = [
+  {"cmd": "python3 -m no_such_module_xyz",  "what": "a module that does not import"},
+  {"cmd": f"node --test {T}/bin/no-such.js","what": "a script behind a flag, absent"},
+  {"cmd": f"bash {T}/bin/no-such.sh",       "what": "a script path, absent"},
+]
+g = {"graph": "rehearse-resolve-bad", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-bad", "base": "main",
+                 "port_base": 4977, "tools": tools},
+     "work": [{"id": "w-one", "what": "nothing", "check": "true"}], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/resolve-bad.json", "w"), indent=2)
+MKBAD
+node doctor.mjs "$T/resolve-bad.json" > "$T/resolve-bad.log" 2>&1; rc3=$?
+echo "  doctor on three absent targets: exit $rc3"
+assert "9. an absent target is still refused, and the row names the target, not the flag" "
+t=open('$T/resolve-bad.log').read()
+assert $rc3 == 1, 'doctor exited $rc3 on three tools that are not there'
+assert 'Not safe to launch' in t, t[-400:]
+assert [l for l in t.splitlines() if 'python3 cannot import no_such_module_xyz' in l], t
+assert [l for l in t.splitlines() if 'no-such.js is not there' in l], t
+assert [l for l in t.splitlines() if 'no-such.sh is not there' in l], t
+assert '--test is not there' not in t and '-m is not there' not in t, t"
+
+echo ""
+if [ "$fails" -ne 0 ]; then
+  echo "  $fails failing."
+elif [ "$skipped" -ne 0 ]; then
+  echo "  $ran assertions, all passing; $skipped SKIPPED and therefore unproven"
+else
+  echo "  $ran assertions, all passing."
+fi
+exit $(( fails > 0 ))

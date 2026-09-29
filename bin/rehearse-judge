@@ -1,0 +1,591 @@
+#!/usr/bin/env bash
+# The judge, rehearsed end to end with the fake executor: zero model calls, a throwaway pursuit,
+# every path the judge adds walked once and asserted on the record it leaves.
+#
+#   bin/rehearse-judge            prints one line per assertion, exits non-zero if any fails
+#
+# What is rehearsed, in the order the runner meets it:
+#   1. a check runs on a fresh checkout of the branch, not in the cell (w-d)
+#   2. a task with no check gets judge.default_check (w-e)
+#   3. a wall that restates its own task is failed, not walled (w-c), and still hands its
+#      proposals to the judge
+#   4. a map's proposals and a wall's proposals each get a verify attempt; verdicts land on the
+#      proposals and on the wall; a failed verdict is honoured by --confirm-scoped and overridable
+#      by --confirm (w-a, w-b)
+#   5. a verify attempt neither parks nor unparks the item it is filed under (w-a stays mapped,
+#      w-b stays walled) and spends none of its attempts
+#   6. a confirmed edge carries a fingerprint and reopens when an end's text changes
+#   7. an attempt the plan window stopped is recorded as such and stops the run's launches
+#   8. the ontology: two mappers naming one lemma make one item with two finders, and the judge
+#      receives the exact structured claim and may use disposable scratch files to test it
+#   9. a linked cache reaches the executor resolved, and claude.sh opens it to the agent's tools,
+#      read-only for the file-writing tools
+#  10. the unattended yes does not count a rejected item as a ticket: a proposal whose only route
+#      reaches work the operator closed as false is left for a person, directly and through a
+#      chain, while a proposal reaching open work is still confirmed
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-judge.XXXXXX")" && pwd -P)   # physical path: on macOS $PWD inside the tree is /private/var/..., not /var/...
+trap 'rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {
+  "graph": "rehearse-judge", "concurrency": 3, "max_attempts": 2,
+  "defaults": {"effort": "low"},
+  "mapping": {"what": "map it", "max_attempts": 1, "params": {"effort": "high"}},
+  "judge": {"verify": "judge it: is each blocker real and does each task say what would clear it",
+            "default_check": "test -f {id}.txt", "params": {"effort": "ultra"}},
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4900},
+  "work": [
+    {"id": "w-a", "what": "add the a feature", "params": {"effort": "medium", "fake": {"map": {
+        "map": {"settles": "a lands", "cost": "small"},
+        "work": [{"id": "w-a-needs", "what": "add lemma foo, which a calls"}],
+        "edges": [{"from": "w-a-needs", "to": "w-a", "why": "a calls foo"}]}}}},
+    {"id": "w-b", "what": "add the b feature", "params": {"fake": {"map": "wall",
+        "verify": {"w-b-needs": "restates b, names no missing thing"}}}},
+    {"id": "w-c", "what": "prove the c lemma", "map": {"settles": "c", "cost": "small"},
+     "params": {"fake": {"prove": "wall", "wall_report": {"wall": "could not prove the c lemma",
+        "work": [{"id": "w-c-x", "what": "state x, which c rests on"}],
+        "edges": [{"from": "w-c-x", "to": "w-c", "why": "c rests on x"}]}}}},
+    {"id": "w-d", "what": "add the d file", "map": {"settles": "d", "cost": "small"}, "params": {"effort": "medium", "reasoning_effort": "xhigh"},
+     "check": "test \"$PWD\" != \"$OSTOYAE_WORKTREE\" && test \"$PWD\" = \"$OSTOYAE_CHECK_TREE\" && test -f w-d.txt && [ \"$(git rev-parse --abbrev-ref HEAD)\" = HEAD ] && [ -n \"$OSTOYAE_TRUNK\" ]"},
+    {"id": "w-e", "what": "add the e file", "map": {"settles": "e", "cost": "small"}, "params": {"reasoning_effort": "xhigh"}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(g, open(f"{T}/judge.json", "w"), indent=2)
+PY
+
+echo "== run 1: the board, fake executor"
+node run.mjs "$T/judge.json" --exec "bash $OST/executors/fake.sh" > "$T/run1.log" 2>&1
+echo "  exit $?; $(grep -c ' start ' "$T/run1.log") launches"
+G="$T/judge.json"; L="$T/run1.log"
+
+assert "effort follows default, item, mapping and judge precedence" "
+import json
+g=json.load(open('$G')); a=g['attempts']
+assert g['defaults']['effort']=='low'
+assert all(x['params']['effort']=='high' for x in a if x.get('kind')=='map')
+assert all(x['params']['effort']=='ultra' for x in a if x.get('kind')=='verify')
+assert any(x['params']['effort']=='low' for x in a if x.get('kind','prove')=='prove')
+assert any(x['of']=='w-d' and x['params']['effort']=='medium' for x in a)
+assert any(x['of']=='w-e' and x['params']['effort']=='xhigh' for x in a)
+assert all(x['result']['usage']['effort']==x['params']['effort'] for x in a if x.get('result',{}).get('usage'))
+"
+
+assert "1. w-d's check ran on a fresh checkout of its branch, and passed" "
+import json;g=json.load(open('$G'))
+a=[a for a in g['attempts'] if a['of']=='w-d' and a.get('kind','prove')=='prove'][0]
+assert a['state']=='done' and a['result']['check']['ok'] and a['result']['check']['on']==a['sandbox']['branch']"
+assert "1. the run log says where the check ran" "
+assert ' (on ost/rehearse-judge/' in open('$L').read()"
+assert "2. w-e had no check and was judged by judge.default_check" "
+import json;g=json.load(open('$G'))
+a=[a for a in g['attempts'] if a['of']=='w-e'][0]
+assert a['state']=='done' and a['result']['check']['ok'] and a['result']['check']['cmd']=='test -f w-e.txt'"
+assert "3. w-c's restating wall is failed, not walled, with the reason noted" "
+import json;g=json.load(open('$G'))
+a=[a for a in g['attempts'] if a['of']=='w-c' and a.get('kind','prove')=='prove'][0]
+assert a['state']=='failed' and a['result']['wall']=='could not prove the c lemma'
+assert any('wall names nothing' in n for n in a['result']['notes'])"
+assert "3. and its proposals still landed and were judged" "
+import json;g=json.load(open('$G'))
+w=[w for w in g['work'] if w['id']=='w-c-x'][0]
+assert w['status']=='proposed' and w['verdict']['ok'] is True"
+assert "4. a verify attempt judged w-a's map and w-b's wall, and verdicts landed" "
+import json;g=json.load(open('$G'))
+vs=[a for a in g['attempts'] if a.get('kind')=='verify']
+judged={a['judges'] for a in vs}
+ma=[a for a in g['attempts'] if a['of']=='w-a' and a.get('kind')=='map'][0]
+mb=[a for a in g['attempts'] if a['of']=='w-b' and a.get('kind')=='map'][0]
+assert ma['id'] in judged and mb['id'] in judged and all(a['state']=='done' for a in vs)
+wa=[w for w in g['work'] if w['id']=='w-a-needs'][0]; wb=[w for w in g['work'] if w['id']=='w-b-needs'][0]
+assert wa['verdict']['ok'] is True and wb['verdict']['ok'] is False and 'restates' in wb['verdict']['why']
+assert mb['result']['wall_verdict']['ok'] is True
+assert all(e.get('verdict') for e in g['edges'])"
+assert "5. w-a is still parked on its map and w-b on its wall, and neither spent a prove" "
+import json,sys;sys.path.insert(0,'$OST/viewer')
+g=json.load(open('$G'))
+import subprocess
+out=subprocess.run(['node','--input-type=module','-e','import {derive} from \"$OST/viewer/state.mjs\"; import fs from \"node:fs\"; const g=JSON.parse(fs.readFileSync(\"$G\",\"utf8\")); const S=derive(g); console.log(S.stateOf(\"w-a\"), S.stateOf(\"w-b\"), String(S.spent(\"w-a\")), String(S.spent(\"w-b\")))'],capture_output=True,text=True).stdout.split()
+assert out==['mapped','walled','0','0'], out"
+assert "5. the summary counts the judge's verdicts and the verify attempts" "
+s=open('$L').read(); assert 'judge: ' in s and 'verify,' in s and 'failed by the judge' not in s"
+
+echo "== run 2: the unattended yes honours the judge"
+# --dry-run first, and it has to change nothing. It used to change everything: bin/ostoyae
+# dropped the flag before the runner saw it, and the runner's decision path ignored DRY anyway,
+# so `confirm-scoped --dry-run` wrote 88 decisions into the live lean-eval board on 2026-09-03
+# while printing a walk that read like a rehearsal.
+cp "$G" "$T/before-dry.json"
+bin/ostoyae confirm-scoped "$G" --dry-run > "$T/run2dry.log" 2>&1
+assert "4. --confirm-scoped --dry-run says what it would change and writes nothing" "
+import hashlib
+h = lambda f: hashlib.md5(open(f,'rb').read()).hexdigest()
+log = open('$T/run2dry.log').read()
+assert h('$G') == h('$T/before-dry.json'), 'the graph was written by a dry run'
+assert 'would change' in log and 'not written' in log, log"
+node run.mjs "$G" --confirm-scoped > "$T/run2.log" 2>&1
+assert "4. --confirm-scoped confirmed w-a's task and edge, left w-b's for the operator, and said why" "
+import json;g=json.load(open('$G'))
+wa=[w for w in g['work'] if w['id']=='w-a-needs'][0]; wb=[w for w in g['work'] if w['id']=='w-b-needs'][0]
+assert wa['status']=='active' and wb['status']=='proposed'
+e=[e for e in g['edges'] if e['from']=='w-a-needs'][0]; assert e['status']=='confirmed'
+assert 'failed by the judge' in open('$T/run2.log').read()"
+assert "6. the confirmed edge carries a fingerprint" "
+import json;g=json.load(open('$G'))
+e=[e for e in g['edges'] if e['from']=='w-a-needs'][0]; assert len(e.get('fingerprint',''))==16"
+python3 - "$G" <<'PY'
+import json,sys; g=json.load(open(sys.argv[1]))
+[w for w in g['work'] if w['id']=='w-a-needs'][0]['what']='add lemma foo AND bar, which a calls'
+json.dump(g, open(sys.argv[1],'w'), indent=2)
+PY
+node run.mjs "$G" --dry-run > "$T/run3.log" 2>&1
+assert "6. a dry run reports the edge reopened once its end's text changed" "
+assert 'reopened' in open('$T/run3.log').read()"
+node run.mjs "$G" --confirm-scoped > "$T/run4.log" 2>&1
+assert "6. a real load writes it back to proposed, dated, and --confirm-scoped leaves it there" "
+import json;g=json.load(open('$G'))
+e=[e for e in g['edges'] if e['from']=='w-a-needs'][0]
+assert e['status']=='proposed' and e.get('reopened_at') and 'changed' in e['reopened_why']
+assert 'reopened after its text changed' in open('$T/run4.log').read()"
+assert "6. --confirm by id gives the second yes and the record says so" "
+import subprocess,json
+subprocess.run(['node','run.mjs','$G','--confirm','e-0002'],capture_output=True)
+g=json.load(open('$G')); e=[e for e in g['edges'] if e['id']=='e-0002'][0]
+assert e['status']=='confirmed' and e.get('reconfirmed_at') and not e.get('reopened_at')"
+assert "4. an attended --confirm can still say yes to what the judge failed" "
+import subprocess,json
+subprocess.run(['node','run.mjs','$G','--confirm','w-b-needs'],capture_output=True)
+g=json.load(open('$G')); wb=[w for w in g['work'] if w['id']=='w-b-needs'][0]; assert wb['status']=='active'"
+
+echo "== run 5: the plan window closes on an attempt"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-window", "concurrency": 2, "max_attempts": 2,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4950},
+     "work": [{"id": "w-x", "what": "x"}, {"id": "w-y", "what": "y"}, {"id": "w-z", "what": "z"}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/window.json", "w"), indent=2)
+PY
+node run.mjs "$T/window.json" --exec "bash -c 'echo \"API Error: 429 rate limit reached for this plan\"; exit 1'" > "$T/run5.log" 2>&1
+assert "7. the attempt is recorded as stopped by the plan window, and the run stopped launching" "
+import json;g=json.load(open('$T/window.json'))
+lim=[a for a in g['attempts'] if a['result'].get('limited')]
+assert lim and all(a['state']=='failed' for a in lim)
+s=open('$T/run5.log').read(); assert 'stopped at the plan window' in s and 'stopped by the plan window' in s
+assert len(g['attempts']) <= 2, len(g['attempts'])"
+
+echo "== run 5b: the window in the CLI's own words, and it spends no try"
+python3 - "$T" <<'PY2'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-window2", "concurrency": 1, "max_attempts": 2,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt5b", "base": "main", "port_base": 4970},
+     "work": [{"id": "w-w", "what": "the w feature", "check": "true"}], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/window2.json", "w"), indent=2)
+PY2
+node run.mjs "$T/window2.json" --exec "bash -c 'echo \"You'\\''ve hit your session limit · resets 1am (UTC)\"; exit 1'" > "$T/run5b.log" 2>&1
+assert "7b. the CLI's session-limit wording is recognised, the check never runs on it, and the try is not spent" "
+import json;g=json.load(open('$T/window2.json'))
+a=g['attempts'][0]
+assert a['result'].get('limited'), a['result']
+assert 'check' not in a['result'], a['result']
+s=open('$T/run5b.log').read(); assert 'stopped at the plan window' in s, s[-600:]"
+assert "7c. and the item is still launchable afterwards: a window-killed attempt is not an attempt at the work" "
+import json,subprocess
+o=subprocess.run(['node','run.mjs','$T/window2.json','--dry-run'],capture_output=True,text=True).stdout
+assert 'w-w' in o and ('start' in o), o[-500:]"
+
+echo "== run 6: the ontology, two mappers naming one lemma"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+# Two items whose mappers propose THE SAME lemma under different ids and different prose, plus
+# one proposal that breaks each rule of the kind, all in one report.
+# Both mappers sleep, so they are provably in flight at the same moment. That is the point of
+# assertion 8b: the ontology lifted the serial-map queue on the argument that a hash collision
+# does not care about timing, and until 2026-09-12 nothing asserted the timing it does not care
+# about. The queue it replaced cost $13.97 on 2026-08-31, when three mappers proposed one task
+# under three ids and the engine built it three times.
+shared = {"kind": "lemma", "claim": {"decl": "Real.tendsto_log_log_atTop",
+                                     "statement": "theorem tendsto_log_log_atTop : Tendsto (fun x => log (log x)) atTop atTop"},
+          "evidence": {"why": "both proofs need it"}}
+g = {
+  "graph": "rehearse-ontology", "concurrency": 3, "max_attempts": 2,
+  "mapping": {"what": "map it", "max_attempts": 1},
+  "judge": {"verify": "judge it"},
+  "ontology": {"kinds": {
+    "lemma": {"claim": ["decl", "statement"], "evidence": ["why", "searched"],
+              "id": "lemma-{decl}", "what": "Prove {decl} in Lean, sorry-free:\n{statement}",
+              "check": "test -f {decl}.txt"},
+    "vendor": {"claim": ["decl", "source"], "id": "vendor-{decl}", "what": "Vendor {decl} from {source}"}}},
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4970},
+  "work": [
+    {"id": "w-p", "what": "problem p", "params": {"fake": {"sleep": 2, "map": {
+        "map": {"settles": "p lands", "cost": "large"},
+        "work": [dict(shared, id="log-log-lemma"),
+                 {"id": "junk1", "kind": "lemma", "claim": {"decl": "X"}},
+                 {"id": "junk2", "kind": "conjecture", "claim": {"decl": "Y"}},
+                 {"id": "junk3", "kind": "lemma", "claim": {"decl": "Z", "statement": "s", "confidence": "high"}}],
+        "edges": [{"from": "log-log-lemma", "to": "w-p", "why": "p needs it"},
+                  {"from": "junk1", "to": "w-p", "why": "dropped end"}]}}}},
+    {"id": "w-q", "what": "problem q", "params": {"fake": {"sleep": 2, "map": {
+        "map": {"settles": "q lands", "cost": "large"},
+        "work": [dict(shared, id="loglog", evidence={"why": "q needs it too"})],
+        "edges": [{"from": "loglog", "to": "w-q", "why": "q needs it"}]}}}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(g, open(f"{T}/ont.json", "w"), indent=2)
+PY
+cat > "$T/exec-capture-verify.sh" <<EOF
+#!/usr/bin/env bash
+ATTEMPT=\$(cat)
+KIND=\$(printf '%s' "\$ATTEMPT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("kind") or "prove")')
+ID=\$(printf '%s' "\$ATTEMPT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+if [ "\$KIND" = verify ]; then cp .ostoyae/verify.json "$T/verify-\$ID.json"; fi
+printf '%s' "\$ATTEMPT" | bash "$OST/executors/fake.sh"
+exit "\${PIPESTATUS[1]}"
+EOF
+chmod +x "$T/exec-capture-verify.sh"
+node run.mjs "$T/ont.json" --exec "bash $T/exec-capture-verify.sh" > "$T/run6.log" 2>&1
+O="$T/ont.json"
+assert "8. two mappers, two names, ONE item, both recorded as finders" "
+import json;g=json.load(open('$O'))
+ls=[w for w in g['work'] if w.get('kind')=='lemma']
+assert len(ls)==1, [w['id'] for w in ls]
+w=ls[0]
+assert w['id']=='w-lemma-real-tendsto-log-log-attop', w['id']
+assert len(w['found_by'])==2, w['found_by']
+assert len(w['claim_hash'])==16 and set(w['claim'])=={'decl','statement'}"
+assert "8b. and the two mappers were genuinely in flight together when they collided" "
+import json
+from datetime import datetime as D
+g=json.load(open('$O'))
+t=lambda x: D.fromisoformat(x.replace('Z','+00:00'))
+m=[a for a in g['attempts'] if a.get('kind')=='map']
+assert len(m)==2, [a['id'] for a in m]
+assert t(m[0]['started_at']) < t(m[1]['ended_at']) and t(m[1]['started_at']) < t(m[0]['ended_at']), \
+    [(a['id'],a['started_at'],a['ended_at']) for a in m]
+w=[w for w in g['work'] if w.get('kind')=='lemma'][0]
+assert sorted(w['found_by'])==sorted([a['id'] for a in m]), (w['found_by'], [a['id'] for a in m])"
+assert "8. its text and its check were generated from the claim, not typed by an agent" "
+import json;g=json.load(open('$O'))
+w=[w for w in g['work'] if w.get('kind')=='lemma'][0]
+assert w['what'].startswith('Prove Real.tendsto_log_log_atTop in Lean, sorry-free:')
+assert 'Tendsto (fun x => log (log x))' in w['what']
+assert w['check']==\"test -f 'Real.tendsto_log_log_atTop'.txt\", w['check']   # claim values are shell-quoted in a check since 2026-09-04
+# Whichever mapper landed first supplies the evidence; it is support, not identity, so the test
+# is that it came from one of them, not which. Pinning it to one wording made this flaky.
+assert w['evidence']['why'] in ('both proofs need it', 'q needs it too'), w['evidence']"
+assert "8. both problems' edges point at the one item, under the id the runner assigned" "
+import json;g=json.load(open('$O'))
+es=[e for e in g['edges'] if e['from']=='w-lemma-real-tendsto-log-log-attop']
+assert sorted(e['to'] for e in es)==['w-p','w-q'], es"
+assert "8. the judge receives the exact claim, not only prose generated from it" "
+import glob,json
+vs=[json.load(open(f)) for f in glob.glob('$T/verify-*.json')]
+ps=[p for v in vs for p in v['proposals'] if p['kind']=='work' and p.get('claim_kind')=='lemma']
+assert ps and all(p['claim']['decl']=='Real.tendsto_log_log_atTop' for p in ps), ps
+assert all('Tendsto (fun x => log (log x))' in p['claim']['statement'] for p in ps), ps"
+assert "8. a judge may test that claim in scratch without changing the pursuit" "
+import json;g=json.load(open('$O'))
+vs=[a for a in g['attempts'] if a.get('kind')=='verify']
+assert vs and all('Use disposable scratch files' in a['what'] for a in vs), vs
+assert all('Write no Lean' not in a['what'] for a in vs), vs"
+assert "8. the rulebook refused a missing key, an unknown kind and a stray key, and said why" "
+import json;g=json.load(open('$O'))
+notes=[n for a in g['attempts'] for n in (a.get('result') or {}).get('notes',[])]
+assert any('missing statement' in n for n in notes), notes
+assert any('is not one of lemma, vendor' in n for n in notes), notes
+assert any('carries confidence' in n for n in notes), notes
+assert any('names work that is not in the graph' in n for n in notes), notes
+assert not [w for w in g['work'] if w['id'] in ('junk1','junk2','junk3')]"
+assert "8. and doctor is green on the result" "
+import subprocess
+r=subprocess.run(['node','doctor.mjs','$O'],capture_output=True,text=True)
+assert r.returncode==0 and 'ontology' in r.stdout and '2 kind(s)' in r.stdout, r.stdout"
+
+echo "== run 7: a linked cache reaches the agent's tools"
+# The pursuit's `.lake/packages` is itself a symlink into a shared tree, as on the Linux box where
+# one Mathlib is shared into 128 workspaces, so the resolved path differs from the linked one and
+# the assertion can tell them apart. `node_modules` is named too and does not exist, to see it
+# skipped rather than handed over.
+mkdir -p "$T/shared-mathlib/Mathlib" && echo 'theorem probe : True := trivial' > "$T/shared-mathlib/Mathlib/Probe.lean"
+mkdir -p "$T/pursuit/lean/.lake" && ln -s "$T/shared-mathlib" "$T/pursuit/lean/.lake/packages"
+# A second workspace whose `.lake/packages` is a link to the same shared tree, as the 86 generated
+# workspaces on the lean-eval board are: the executor must be handed the target once.
+mkdir -p "$T/pursuit/lean2/.lake" && ln -s "$T/shared-mathlib" "$T/pursuit/lean2/.lake/packages"
+cat > "$T/exec-linked.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s' "\${OSTOYAE_LINKED:-UNSET}" > "$T/linked.txt"
+cp CLAUDE.md "$T/contract.md"
+ls lean/.lake/packages/Mathlib/Probe.lean > "$T/ls.txt" 2>&1
+exec bash "$OST/executors/fake.sh"
+EOF
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-linked", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4990,
+                 "link": ["lean/.lake/packages", "lean2/.lake/packages", "node_modules"]},
+     "work": [{"id": "w-l", "what": "read the linked cache"}], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/linked.json", "w"), indent=2)
+PY
+node run.mjs "$T/linked.json" --exec "bash $T/exec-linked.sh" > "$T/run7.log" 2>&1
+assert "9. the executor is handed where the links resolve to, once per target, and only the links that exist" "
+assert open('$T/linked.txt').read() == '$T/shared-mathlib', open('$T/linked.txt').read()"
+assert "9. the cell sees the shared file through the link" "
+assert open('$T/ls.txt').read().strip() == 'lean/.lake/packages/Mathlib/Probe.lean', open('$T/ls.txt').read()"
+assert "9. the contract tells the agent its tools reach the shared paths, and names the one skipped" "
+c = open('$T/contract.md').read()
+assert 'Read, Grep and Bash tools are allowed into them' in c and '1 not present on this machine, skipped' in c, c"
+
+# claude.sh's half, with a stub `claude` that records its argv and answers like a finished session.
+mkdir -p "$T/stub" && cat > "$T/stub/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$T/argv.txt"
+echo '{"type":"result","result":"stub","total_cost_usd":0}'
+EOF
+chmod +x "$T/stub/claude"
+git init -q -b main "$T/stubcell" && (cd "$T/stubcell" && echo x > x && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+(cd "$T/stubcell" && printf '{"id":"a-1","of":"w-l","what":"grep it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-1 OSTOYAE_WORK=w-l OSTOYAE_LINKED="$T/shared-mathlib:/opt/other" bash "$OST/executors/claude.sh" > "$T/stub1.log" 2>&1)
+assert "9. claude.sh hands every linked path to claude as --add-dir, closed by the next flag" "
+a = open('$T/argv.txt').read().split('\n')
+i = a.index('--add-dir')
+assert a[i+1:i+3] == ['$T/shared-mathlib', '/opt/other'] and a[i+3].startswith('--'), a"
+assert "9. and denies the file-writing tools under every linked path, by a settings rule that precedes --add-dir" "
+import json
+a = open('$T/argv.txt').read().split('\n')
+s = json.loads(a[a.index('--settings') + 1])
+deny = set(s['permissions']['deny'])
+want = {f'{t}(/{d}/**)' for d in ('$T/shared-mathlib', '/opt/other') for t in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit')}
+assert deny == want and a.index('--settings') < a.index('--add-dir'), (deny, a)"
+# WebSearch and WebFetch, when the operator has opened them. Off by default.
+(cd "$T/stubcell" && printf '{"id":"a-5","of":"w-l","what":"map it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-5 OSTOYAE_WORK=w-l OSTOYAE_WEB=1 OSTOYAE_LINKED="$T/shared-mathlib" bash "$OST/executors/claude.sh" > "$T/stub5.log" 2>&1)
+assert "9. OSTOYAE_WEB allows the two search tools, in the same settings that denies the linked paths" "
+import json
+a = open('$T/argv.txt').read().split('\n')
+s = json.loads(a[a.index('--settings') + 1])['permissions']
+assert s['allow'] == ['WebSearch', 'WebFetch'], s
+assert any(r.startswith('Write(/$T/shared-mathlib') for r in s['deny']), s
+assert a.count('--settings') == 1, a"
+(cd "$T/stubcell" && printf '{"id":"a-6","of":"w-l","what":"map it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-6 OSTOYAE_WORK=w-l OSTOYAE_LINKED="$T/shared-mathlib" bash "$OST/executors/claude.sh" > "$T/stub6.log" 2>&1)
+assert "9. and a cell gets no web tools unless the operator opened them" "
+import json
+a = open('$T/argv.txt').read().split('\n')
+assert 'allow' not in json.loads(a[a.index('--settings') + 1])['permissions'], a"
+(cd "$T/stubcell" && printf '{"id":"a-7","of":"w-l","what":"map it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-7 OSTOYAE_WORK=w-l bash "$OST/executors/claude.sh" > "$T/stub7.log" 2>&1)
+assert "9. and no --settings at all when nothing is linked and the web is closed" "
+assert '--settings' not in open('$T/argv.txt').read().split('\n')"
+
+# The Lean language server, when the operator has named it. It is off unless OSTOYAE_LEAN_MCP
+# points at an executable, so a machine without it runs exactly as before.
+printf '#!/usr/bin/env bash\ntrue\n' > "$T/stub/lean-mcp" && chmod +x "$T/stub/lean-mcp"
+(cd "$T/stubcell" && printf '{"id":"a-3","of":"w-l","what":"prove it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-3 OSTOYAE_WORK=w-l OSTOYAE_WORKTREE="$T/stubcell" OSTOYAE_LEAN_MCP="$T/stub/lean-mcp" bash "$OST/executors/claude.sh" > "$T/stub3.log" 2>&1)
+assert "9. claude.sh gives the cell the Lean language server, pointed at its own worktree, closed by the next flag" "
+import json
+a = open('$T/argv.txt').read().split('\n')
+i = a.index('--mcp-config')
+cfg = json.loads(a[i + 1])['mcpServers']['lean']
+assert a[i + 2].startswith('--'), a
+assert cfg['command'] == '$T/stub/lean-mcp', cfg
+assert cfg['env']['LEAN_PROJECT_PATH'] == '$T/stubcell', cfg"
+assert "9. and a Lean cell may run lake, lean and the lean tool server, because a headless cell approves nothing" "
+import json
+a = open('$T/argv.txt').read().split('\\n')
+allow = json.loads(a[a.index('--settings') + 1])['permissions']['allow']
+assert set(allow) >= {'Bash(lake:*)', 'Bash(lean:*)', 'mcp__lean'}, allow
+assert 'WebSearch' not in allow, allow"
+(cd "$T/stubcell" && printf '{"id":"a-4","of":"w-l","what":"prove it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-4 OSTOYAE_WORK=w-l bash "$OST/executors/claude.sh" > "$T/stub4.log" 2>&1)
+assert "9. and passes no --mcp-config when the operator has not named one" "
+assert '--mcp-config' not in open('$T/argv.txt').read().split('\n')"
+
+(cd "$T/stubcell" && printf '{"id":"a-2","of":"w-l","what":"grep it"}' | PATH="$T/stub:$PATH" OSTOYAE_ATTEMPT=a-2 OSTOYAE_WORK=w-l bash "$OST/executors/claude.sh" > "$T/stub2.log" 2>&1)
+assert "9. and passes no --add-dir when nothing is linked" "
+assert '--add-dir' not in open('$T/argv.txt').read().split('\n')"
+
+echo "== run 8: the unattended yes and a route that is already closed"
+# A route the operator has already closed is not a destination. `confirmScoped` built its set of
+# pre-existing work by excluding proposals only, so a rejected item still counted as a ticket and
+# a proposal whose one edge reached it passed the scope gate unattended — the walk reporting
+# "reaches a ticket" about work that was closed as false. w-open is the control: an ordinary
+# ticket, and the proposal that reaches it must still be confirmed, because this is a scope rule
+# and not a switch that stops saying yes.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-closed", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-closed", "base": "main", "port_base": 4960},
+     "work": [
+       {"id": "w-open", "what": "an open ticket"},
+       {"id": "w-closed", "what": "a statement proved false", "status": "rejected",
+        "decided_at": "2026-09-08", "rejected_why": "disproved in Lean by a-0007"},
+       {"id": "w-to-closed", "what": "a lemma the closed statement needed", "status": "proposed"},
+       {"id": "w-via-closed", "what": "a lemma that lemma needed", "status": "proposed"},
+       {"id": "w-to-open", "what": "a lemma the open ticket needs", "status": "proposed"},
+     ],
+     "edges": [
+       {"id": "e-0001", "from": "w-to-closed",  "to": "w-closed",     "status": "proposed", "why": "it needed it"},
+       {"id": "e-0002", "from": "w-via-closed", "to": "w-to-closed",  "status": "proposed", "why": "one step further out"},
+       {"id": "e-0003", "from": "w-to-open",    "to": "w-open",       "status": "proposed", "why": "the open ticket needs it"},
+     ],
+     "attempts": []}
+json.dump(g, open(f"{T}/closed.json", "w"), indent=2)
+PY
+C="$T/closed.json"
+node run.mjs "$C" --confirm-scoped > "$T/run8.log" 2>&1
+echo "  exit $?"
+assert "10. a proposal whose only route is a closed statement is left for the operator" "
+import json;g=json.load(open('$C'))
+w={x['id']:x for x in g['work']}; e={x['id']:x for x in g['edges']}
+assert w['w-to-closed']['status']=='proposed', w['w-to-closed']
+assert e['e-0001']['status']=='proposed', e['e-0001']
+assert 'decided_at' not in w['w-to-closed'], w['w-to-closed']"
+assert "10. and so is one that reaches it only through another proposal" "
+import json;g=json.load(open('$C'))
+w={x['id']:x for x in g['work']}; e={x['id']:x for x in g['edges']}
+assert w['w-via-closed']['status']=='proposed', w['w-via-closed']
+assert e['e-0002']['status']=='proposed', e['e-0002']"
+assert "10. the closed statement is left closed: this decides nothing on the operator's behalf" "
+import json;g=json.load(open('$C'))
+w={x['id']:x for x in g['work']}
+assert w['w-closed']['status']=='rejected' and w['w-closed']['decided_at']=='2026-09-08', w['w-closed']
+assert w['w-closed']['rejected_why']=='disproved in Lean by a-0007', w['w-closed']
+assert w['w-open'].get('status','active')=='active', w['w-open']"
+assert "10. a proposal that reaches open work is still confirmed, and the count says two left" "
+import json;g=json.load(open('$C'))
+w={x['id']:x for x in g['work']}; e={x['id']:x for x in g['edges']}
+assert w['w-to-open']['status']=='active', w['w-to-open']
+assert e['e-0003']['status']=='confirmed', e['e-0003']
+log=open('$T/run8.log').read()
+assert '2 changed' in log, log
+assert '4 proposal(s) left for the operator' in log and 'reach no ticket' in log, log"
+assert "10. and --confirm by id is still the way a person says yes to one of them" "
+import json,subprocess
+subprocess.run(['node','run.mjs','$C','--confirm','w-to-closed,e-0001'],capture_output=True)
+g=json.load(open('$C'))
+w={x['id']:x for x in g['work']}; e={x['id']:x for x in g['edges']}
+assert w['w-to-closed']['status']=='active' and e['e-0001']['status']=='confirmed', (w['w-to-closed'], e['e-0001'])"
+
+echo "== run 11: a judged discovery holds its source only through a live path (tinygrad A/B)"
+# #11756's mapper found a real side bug with no edge to its source; #5360's edge was
+# refuted by the judge. Both sources stayed parked on proposals no one could answer
+# unattended. The runner and the viewer share derive(), so these states are both.
+node --input-type=module > "$T/run11.log" 2>&1 <<'JS'
+import { derive } from "./viewer/state.mjs";
+let fails = 0;
+const check = (n, c) => { console.log((c ? "  ok    " : "  FAIL  ") + n); if (!c) fails++; };
+const att = (id, of, kind, state, result) => ({ id, of, kind, state, result });
+// #11756: judged-ok side discovery, no edge.
+let g = { mapping: { what: "m" }, judge: { verify: "j" }, max_attempts: 2,
+  work: [{ id: "w-s", what: "source" },
+    { id: "w-side", what: "side bug", status: "proposed", found_by: ["a-1"], verdict: { ok: true } }],
+  edges: [], attempts: [att("a-1", "w-s", "map", "done",
+    { map: { settles: "x", cost: "small" }, found: ["w-side"] })] };
+let S = derive(g);
+check("11. judged-ok side work with no edge does not park its source", S.stateOf("w-s") === "ready");
+check("11. the side discovery stays proposed for review", S.stateOf("w-side") === "proposed");
+// #5360: judged-ok work, refuted edge.
+g = { mapping: { what: "m" }, judge: { verify: "j" }, max_attempts: 2,
+  work: [{ id: "w-s", what: "source" },
+    { id: "w-need", what: "need", status: "proposed", found_by: ["a-1"], verdict: { ok: true } }],
+  edges: [{ id: "e-0001", from: "w-need", to: "w-s", why: "claimed", status: "proposed",
+    found_by: ["a-1"], verdict: { ok: false } }],
+  attempts: [att("a-1", "w-s", "map", "done",
+    { map: { settles: "x", cost: "small" }, found: ["w-need", "e-0001"] })] };
+S = derive(g);
+check("11. a refuted edge does not park its source", S.stateOf("w-s") === "ready");
+check("11. need and refuted edge stay proposed", S.lookup("w-need").status === "proposed" &&
+  S.lookup("e-0001").status === "proposed");
+// Indirect: judged-ok work reaching the source only through a refuted edge does not hold.
+g.edges.push({ id: "e-0002", from: "w-far", to: "w-need", why: "chain", status: "proposed",
+  found_by: ["a-1"], verdict: { ok: true } });
+g.work.push({ id: "w-far", what: "far", status: "proposed", found_by: ["a-1"], verdict: { ok: true } });
+g.attempts[0].result.found.push("w-far", "e-0002");
+S = derive(g);
+check("11. an indirect path through a refuted edge does not park", S.stateOf("w-s") === "ready");
+g.edges[0].verdict = { ok: true };
+S = derive(g);
+check("11. an indirect live path still parks", S.stateOf("w-s") === "mapped");
+// Preserved: unjudged proposals, refuted work, and real prerequisites still hold.
+g = { max_attempts: 2,
+  work: [{ id: "w-u", what: "walled" },
+    { id: "w-u-need", what: "claimed need", status: "proposed", found_by: ["a-1"] }],
+  edges: [{ id: "e-9", from: "w-u-need", to: "w-u", why: "u needs it", status: "proposed", found_by: ["a-1"] }],
+  attempts: [att("a-1", "w-u", "prove", "walled", { wall: "blocked", found: ["w-u-need", "e-9"] })] };
+S = derive(g);
+check("11. an unjudged wall dependency still parks", S.stateOf("w-u") === "walled");
+g.edges = [];
+g.attempts[0].result.found = ["w-u-need"];
+g.work[1].verdict = { ok: false };
+S = derive(g);
+check("11. refuted work still parks until the operator closes it", S.stateOf("w-u") === "walled");
+g = { max_attempts: 2,
+  work: [{ id: "w-c", what: "shared prerequisite" }, { id: "w-a", what: "one" }, { id: "w-b", what: "two" }],
+  edges: [{ id: "e-1", from: "w-c", to: "w-a", status: "confirmed", why: "a needs c" },
+    { id: "e-2", from: "w-c", to: "w-b", status: "confirmed", why: "b needs c" }],
+  attempts: [] };
+S = derive(g);
+check("11. a shared prerequisite holds two dependents while open",
+  S.stateOf("w-a") === "waiting" && S.stateOf("w-b") === "waiting");
+g.attempts.push(att("a-1", "w-c", "prove", "done", {}));
+S = derive(g);
+check("11. both proceed once it completes", S.readyIds().has("w-a") && S.readyIds().has("w-b"));
+process.exit(fails ? 1 : 0);
+JS
+if [ "$?" = 0 ]; then pass "11. all parking states read as decided"; else fail "11. parking states"; tail -5 "$T/run11.log" | sed 's/^/        /'; fi
+
+echo "== run 12: the unattended run proves through judged discoveries"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-park", "concurrency": 1, "max_attempts": 1,
+     "mapping": {"what": "map it", "max_attempts": 1},
+     "judge": {"verify": "judge it: is each blocker real"},
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-park", "base": "main", "port_base": 4970},
+     "work": [
+       {"id": "w-side", "what": "the side ticket", "params": {"fake": {"map": {
+         "map": {"settles": "side lands", "cost": "small"},
+         "work": [{"id": "w-side-note", "what": "a real side bug the mapper found"}],
+         "edges": []}}}},
+       {"id": "w-dep", "what": "the depended ticket", "params": {"fake": {"map": {
+         "map": {"settles": "dep lands", "cost": "small"},
+         "work": [{"id": "w-dep-need", "what": "a real bug that does not block dep"}],
+         "edges": [{"from": "w-dep-need", "to": "w-dep", "why": "dep cannot be verified without it"}]},
+         "verify": {"e-0001": "no: dep reproduces without it"}}}},
+     ], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/park.json", "w"), indent=2)
+PY
+P="$T/park.json"
+node run.mjs "$P" --exec "bash $OST/executors/fake.sh" --auto-advance --max-launches 12 > "$T/run12.log" 2>&1
+echo "  exit $?"
+assert "12. both sources were proved after their maps were judged" "
+import json;g=json.load(open('$P'))
+ps={a['of']:a for a in g['attempts'] if a.get('kind','prove')=='prove'}
+assert ps['w-side']['state']=='done' and ps['w-dep']['state']=='done', [(a['of'],a['state']) for a in g['attempts']]"
+assert "12. the discoveries and the refuted edge stay proposed, nothing auto-confirmed" "
+import json;g=json.load(open('$P'))
+w={x['id']:x for x in g['work']}; e={x['id']:x for x in g['edges']}
+assert w['w-side-note']['status']=='proposed' and w['w-dep-need']['status']=='proposed', w
+assert len(e)==1, e
+edge=list(e.values())[0]
+assert edge['status']=='proposed' and edge['verdict']['ok'] is False, edge
+assert not [x for x in list(w.values())+list(e.values()) if x.get('decided_via')=='auto-advance'], 'nothing was in scope to confirm'"
+assert "12. the drain says discoveries await review, not that work is parked" "
+import json;g=json.load(open('$P'))
+assert g['last_run']['drained']=='awaiting-decision', g['last_run']"
+
+echo
+if [ "$fails" = 0 ]; then echo "  rehearsal passed"; else echo "  $fails assertion(s) failed; logs in $T (kept)"; trap - EXIT; exit 1; fi

@@ -1,0 +1,624 @@
+#!/usr/bin/env bash
+# Crash consistency and hostile state, rehearsed with the fake executor: zero model calls,
+# a throwaway pursuit, real signals and real git state.
+#
+#   bin/rehearse-crash             prints one line per assertion, exits non-zero if any fails
+#
+# What is rehearsed, in the order a dead runner meets it:
+#   1. two starters in the same instant: exactly one becomes the runner, the other refuses;
+#      and a prove that reported spend commits its file with no .ostoyae/ on the branch
+#   2. a stale lock never bricks the board: dead holder, garbage, and recycled pid all break
+#   3. hostile handback shapes are dropped with a note, never a throw out of settle
+#   4. a trunk worktree left mid-merge is abandoned before the next merge, not blamed on it
+#   5. a corrupt heartbeat refuses cleanly on every path, never a stack trace: status
+#      exits 2 (pinned: a board beside an unverifiable runner is not shown), launch exits 1,
+#      stop reports UNKNOWN with exit 10
+#   6. recycled cell pids are neither signalled nor adopted
+#   7. recovery is idempotent: kill -9, two recoveries, settled history byte-identical
+#   8. status and the viewer derivation agree after recovery
+#   9. every writer holds the lock: a slow gate starves no starter into the record,
+#      and confirm and init refuse beside a live holder and break a stale one
+#  10. stop names a starting runner instead of reporting nothing; an unverifiable
+#      lock owner refuses fail-closed for launch, init and stop; init claims and
+#      releases; a kill -9 stranded lock breaks on next launch
+#  11. a decision never writes a pre-claim snapshot: a change that lands between
+#      load and claim survives the confirm
+#  12. one board, every spelling: case aliases of one file share its lock and
+#      sidecars, and refuse beside each other (or fail clean as missing boards
+#      where the filesystem is case-sensitive)
+#  13. mixed versions: the last pre-lock engine (d632f2f, vendored verbatim under
+#      rehearsals/fixtures and diffed against the commit where history is present)
+#      and the current engine refuse beside each other in both directions, the
+#      new side names the legacy writer, the runfile lands with the claim, and
+#      recovery over old-written records completes without loss
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-crash.XXXXXX")" && pwd -P)
+trap 'pkill -f "$T" 2>/dev/null; rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+mkboard() { # $1=name $2=items $3=sleep $4=portbase $5=concurrency [$6=usd]
+python3 - "$T" "$1" "$2" "$3" "$4" "$5" "${6:-0}" <<'PY'
+import json, sys
+T, name, n, sleep, port, conc, usd = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), float(sys.argv[7])
+g = {"graph": name, "concurrency": conc, "max_attempts": 2,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": port},
+     "work": [{"id": f"w-{i}", "what": f"do {i}", "params": {"fake": dict({"sleep": sleep}, **({"usd": usd} if usd else {}))}} for i in range(n)],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/{name}.json", "w"), indent=2)
+PY
+}
+EXEC="bash $OST/executors/fake.sh"
+
+echo "== 1: two starters, exactly one runner"
+mkboard race 8 3 4970 2
+G="$T/race.json"
+for pair in 1 2; do
+  node run.mjs "$G" --exec "$EXEC" --max-launches 2 > "$T/race$pair-A.log" 2>&1 & PA=$!
+  node run.mjs "$G" --exec "$EXEC" --max-launches 2 > "$T/race$pair-B.log" 2>&1 & PB=$!
+  wait $PA; RA=$?; wait $PB; RB=$?
+  echo "$RA $RB" > "$T/race$pair.rc"
+done
+assert "1a. pair 1: exactly one starter launched" "
+sa = open('$T/race1-A.log').read().count(' start ')
+sb = open('$T/race1-B.log').read().count(' start ')
+assert (sa > 0) != (sb > 0), (sa, sb)"
+assert "1b. pair 1: the loser refused with 'already live' and exited 1" "
+import re
+la, lb = open('$T/race1-A.log').read(), open('$T/race1-B.log').read()
+loser = la if ' start ' not in la else lb
+assert 'already live' in loser, loser[-400:]
+ra, rb = open('$T/race1.rc').read().split()
+assert sorted([ra, rb]) == ['0', '1'], (ra, rb)"
+assert "1c. pair 2: exactly one starter launched and the loser refused" "
+la, lb = open('$T/race2-A.log').read(), open('$T/race2-B.log').read()
+assert ((' start ' in la) != (' start ' in lb)), (bool(' start ' in la), bool(' start ' in lb))
+loser = la if ' start ' not in la else lb
+assert 'already live' in loser, loser[-400:]"
+assert "1d. no attempt id was launched twice and none was lost" "
+import json;g=json.load(open('$G'))
+ids=[a['id'] for a in g['attempts']]
+assert len(ids)==len(set(ids))==4, ids
+assert all(a['state']=='done' for a in g['attempts']), [(a['id'],a['state']) for a in g['attempts']]"
+assert "1e. neither starter crashed and no lock is left behind" "
+import os
+for f in ('race1-A.log','race1-B.log','race2-A.log','race2-B.log'):
+    t=open(f'$T/{f}').read()
+    assert 'ENOENT' not in t and 'Error:' not in t, t[-300:]
+assert not os.path.exists('$T/race.run.json.lock'), os.listdir('$T')"
+mkboard usdprove 1 0 4960 1 0.5
+node run.mjs "$T/usdprove.json" --exec "$EXEC" --max-launches 1 > "$T/usd.log" 2>&1; RU=$?
+assert "1f. a prove that reported spend commits its file with no .ostoyae/ on the branch" "
+import json, subprocess
+assert $RU == 0, open('$T/usd.log').read()[-400:]
+g = json.load(open('$T/usdprove.json')); a = g['attempts']
+assert len(a) == 1 and a[0]['state'] == 'done', [(x['state'], x.get('result')) for x in a]
+assert abs(a[0]['result']['usage']['cost_usd'] - 0.5) < 1e-9, a[0]['result']
+files = subprocess.run(['git', '-C', '$T/pursuit', 'ls-tree', '-r', '--name-only', a[0]['sandbox']['branch']], capture_output=True, text=True).stdout.split()
+assert 'w-0.txt' in files, files
+assert not any(f == '.ostoyae' or f.startswith('.ostoyae/') for f in files), files"
+
+echo "== 2: a stale lock never bricks the board"
+mkboard lockb 3 0 4980 1
+L="$T/lockb.json"
+LK="$T/lockb.run.json.lock"
+sleep 0.2 & DEAD=$!; wait $DEAD 2>/dev/null || true
+python3 -c "
+import json;json.dump({'pid':$DEAD,'identity':{'method':'proc','pid':$DEAD,'boot':'gone','start':'0'},
+ 'file':'$L','started':'2026-09-18T00:00:00Z'}, open('$LK','w'))"
+node run.mjs "$L" --exec "$EXEC" --max-launches 1 > "$T/lock-dead.log" 2>&1; RD=$?
+assert "2a. a lock whose holder is dead is broken and the run proceeds" "
+import json;t=open('$T/lock-dead.log').read()
+assert $RD == 0, ($RD, t[-400:])
+assert 'already live' not in t, t[-400:]
+assert ' start ' in t, t[-400:]
+assert len(json.load(open('$L'))['attempts'])==1"
+echo 'garbage{{{' > "$LK"
+node run.mjs "$L" --exec "$EXEC" --max-launches 1 > "$T/lock-garbage.log" 2>&1; RG=$?
+assert "2b. a garbage lock is broken after the grace re-read, not obeyed" "
+import json;t=open('$T/lock-garbage.log').read()
+assert $RG == 0, ($RG, t[-400:])
+assert 'already live' not in t, t[-400:]
+assert len(json.load(open('$L'))['attempts'])==2"
+sleep 300 & VICTIM=$!
+python3 -c "
+import json;json.dump({'pid':$VICTIM,'identity':{'method':'proc','pid':$VICTIM,'boot':'not-this-boot','start':'0'},
+ 'file':'$L','started':'2026-09-18T00:00:00Z'}, open('$LK','w'))"
+node run.mjs "$L" --exec "$EXEC" --max-launches 1 > "$T/lock-recycled.log" 2>&1; RR=$?
+assert "2c. a lock naming a recycled pid is broken, and the stranger lives" "
+import json, subprocess;t=open('$T/lock-recycled.log').read()
+assert $RR == 0, ($RR, t[-400:])
+assert len(json.load(open('$L'))['attempts'])==3
+state=subprocess.run(['ps','-p','$VICTIM','-o','stat='],capture_output=True,text=True).stdout.strip()
+assert not state or not state.startswith('Z'), state"
+kill $VICTIM 2>/dev/null || true
+
+echo "== 3: hostile handback shapes never crash absorb"
+node --input-type=module -e "
+import { absorb } from './lib/handback.mjs';
+const ctx = () => ({ g: { work: [], edges: [] }, work: new Map(), ONT: null, today: () => 't', edgeId: () => 'e-9' });
+const shapes = ['{\"work\": 5}', '{\"work\": {\"id\": \"w-x\"}}', '{\"edges\": 7}', '{\"work\": \"abc\"}'];
+let bad = 0;
+for (const s of shapes) {
+  try {
+    const r = absorb(JSON.parse(s), { id: 'a-1' }, ctx());
+    if (r.found.length || !r.notes.length) { console.log('WRONG SHAPE RESULT ' + s); bad++; }
+  } catch (e) { console.log('THREW ' + s + ': ' + e.message); bad++; }
+}
+const ok = absorb({ work: [{ id: 'w-x', what: 'ex' }] }, { id: 'a-1' }, ctx());
+if (JSON.stringify(ok.found) !== '[\"w-x\"]') { console.log('VALID SHAPE BROKEN'); bad++; }
+process.exit(bad ? 1 : 0);" > "$T/absorb.log" 2>&1 && pass "3a. non-array work/edges drop with a note; valid shapes still land" || fail "3a. $(cat "$T/absorb.log")"
+
+echo "== 4: a stale trunk merge is abandoned, not blamed on the next branch"
+node --input-type=module -e "
+import { ensureTrunk, integrate, trunkPath } from './sandbox.mjs';
+import { execFileSync } from 'node:child_process';
+const T = '$T';
+const cfg = { repo: T + '/pursuit', root: T + '/wt', base: 'main' };
+const sh = (c, a, o = {}) => execFileSync(c, a, { encoding: 'utf8', ...o }).trim();
+const mk = (br, file, content, msg) => {
+  sh('git', ['-C', T + '/pursuit', 'checkout', '-qb', br, 'main']);
+  sh('bash', ['-c', 'echo ' + content + ' > ' + T + '/pursuit/' + file + ' && cd ' + T + '/pursuit && git add -A && git -c user.name=r -c user.email=r@x commit -qm ' + msg]);
+  sh('git', ['-C', T + '/pursuit', 'checkout', '-q', 'main']);
+};
+ensureTrunk(cfg, 'stalemerge', () => {});
+mk('ost/stalemerge/a-0001', 'f', 'trunkside', 'trunkside');
+integrate(cfg, 'stalemerge', 'ost/stalemerge/a-0001', () => {});
+mk('ost/stalemerge/a-0002', 'f', 'otherside', 'otherside');
+try { sh('git', ['-C', trunkPath(cfg, 'stalemerge'), '-c', 'user.name=rehearsal', '-c', 'user.email=rehearsal@invalid', 'merge', '--no-edit', 'ost/stalemerge/a-0002']); } catch {}
+const uu = sh('git', ['-C', trunkPath(cfg, 'stalemerge'), 'status', '--porcelain']);
+if (!/^[AU][AU] f$/m.test(uu)) { console.log('SETUP FAILED: no stale conflict'); process.exit(1); }
+mk('ost/stalemerge/a-0003', 'z.txt', 'clean', 'clean');
+const logs = [];
+const r = integrate(cfg, 'stalemerge', 'ost/stalemerge/a-0003', (m) => logs.push(m));
+const landed = sh('bash', ['-c', 'git -C ' + T + '/pursuit show ost/stalemerge/trunk:z.txt 2>/dev/null || echo NO']);
+console.log(JSON.stringify({ r, abandoned: logs.some((m) => m.includes('abandoned')), landed }));
+if (!r.ok || landed.trim() !== 'clean' || !logs.some((m) => m.includes('abandoned'))) process.exit(1);" > "$T/merge.log" 2>&1 \
+  && pass "4a. integrate abandons the stale merge and lands the clean branch: $(cat "$T/merge.log")" \
+  || fail "4a. $(cat "$T/merge.log")"
+
+echo "== 5: a corrupt heartbeat refuses cleanly on every path"
+mkboard rf 1 0 4990 1
+R="$T/rf.json"
+echo '{"graph": "rf", "pid": 12' > "$T/rf.run.json"
+node cli.mjs status "$R" > "$T/status-corrupt.log" 2>&1; RS=$?
+node run.mjs "$R" --exec "$EXEC" --max-launches 1 > "$T/launch-corrupt.log" 2>&1; RL=$?
+node run.mjs "$R" --stop > "$T/stop-corrupt.log" 2>&1; RP=$?
+assert "5a. status exits 2 naming the heartbeat, showing nothing beside it (pinned)" "
+import re;t=open('$T/status-corrupt.log').read()
+assert $RS == 2, ($RS, t[-300:])
+assert re.search(r'invalid JSON.*heartbeat', t), t[-300:]"
+
+assert "5b. launch refuses with exit 1, naming the resolution, no stack trace" "
+t=open('$T/launch-corrupt.log').read()
+assert $RL == 1, ($RL, t[-300:])
+assert 'Resolve it before launching or stopping' in t, t[-300:]
+assert '\n    at ' not in t, t[-300:]"
+assert "5c. stop reports UNKNOWN with exit 10, no stack trace" "
+t=open('$T/stop-corrupt.log').read()
+assert $RP == 10, ($RP, t[-300:])
+assert 'UNKNOWN' in t and 'Resolve it before launching or stopping' in t, t[-300:]
+assert '\n    at ' not in t, t[-300:]"
+rm -f "$T/rf.run.json"
+
+echo "== 6: recycled cell pids are neither signalled nor adopted"
+mkboard recycle 1 0 4995 1
+C="$T/recycle.json"
+sleep 300 & CV1=$!; sleep 300 & CV2=$!
+mkdir -p "$T/wt/recycle/a-0001/.ostoyae"
+python3 - "$T" "$CV1" "$CV2" <<'PY'
+import json, sys
+T, v1, v2 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+g = json.load(open(f"{T}/recycle.json"))
+g["attempts"] = [{"id": "a-0001", "of": "w-0", "kind": "prove", "what": "x", "from": None,
+  "state": "running", "params": {"attempt": 1},
+  "sandbox": {"worktree": "wt/recycle/a-0001", "branch": "ost/recycle/a-0001", "db": "ost_recycle_0001", "port": 4995},
+  "started": "t+0", "ended": None, "started_at": "2026-09-18T00:00:00Z", "ended_at": None, "result": None,
+  "cell_pid": v1,
+  "cell_identity": {"method": "proc", "pid": v1, "boot": "dead-beef", "start": "0", "cwd": f"{T}/wt/recycle/a-0001"},
+  "cell_group": {"pgid": v1, "status": "alive",
+    "leader": {"method": "proc", "pid": v1, "boot": "dead-beef", "start": "0", "cwd": f"{T}/wt/recycle/a-0001"},
+    "members": [{"method": "proc", "pid": v1, "boot": "dead-beef", "start": "0", "cwd": f"{T}/wt/recycle/a-0001"},
+                {"method": "proc", "pid": v2, "boot": "dead-beef", "start": "0", "cwd": f"{T}/wt/recycle/a-0001"}],
+    "unverified": []}}]
+json.dump(g, open(f"{T}/recycle.json", "w"), indent=2)
+PY
+node run.mjs "$C" --stop --now > "$T/recycle-stop.log" 2>&1
+assert "6a. stop --now signals nothing at the strangers" "
+import subprocess
+for p in ('$CV1', '$CV2'):
+    state=subprocess.run(['ps','-p',p,'-o','stat='],capture_output=True,text=True).stdout.strip()
+    assert not state or not state.startswith('Z'), (p, state)"
+node run.mjs "$C" --exec "$EXEC" --max-launches 1 > "$T/recycle-sweep.log" 2>&1
+assert "6b. the sweep settles from the empty cell without adopting" "
+import json;t=open('$T/recycle-sweep.log').read()
+assert 'adopted' not in t and 'swept' in t, t[-500:]
+g=json.load(open('$C'))
+assert [a['state'] for a in g['attempts'] if a['id']=='a-0001']==['failed']"
+assert "6c. both strangers survived the sweep too" "
+import subprocess
+for p in ('$CV1', '$CV2'):
+    state=subprocess.run(['ps','-p',p,'-o','stat='],capture_output=True,text=True).stdout.strip()
+    assert not state or not state.startswith('Z'), (p, state)"
+kill $CV1 $CV2 2>/dev/null || true
+
+echo "== 7: recovery is idempotent"
+mkboard idem 2 15 5000 2
+I="$T/idem.json"
+node run.mjs "$I" --exec "$EXEC" > "$T/idem-run.log" 2>&1 &
+IR=$!
+for _ in $(seq 1 60); do
+  n=$(python3 -c "import json;print(len([a for a in json.load(open('$I'))['attempts'] if a.get('cell_pid')]))" 2>/dev/null || echo 0)
+  [ "$n" -ge 2 ] && break; sleep 1
+done
+[ "$n" -ge 2 ] || fail "two cells never started (idem)"
+kill -9 $IR 2>/dev/null; sleep 1
+node run.mjs "$I" --stop --now > "$T/idem-kill.log" 2>&1; sleep 2
+node run.mjs "$I" --exec "$EXEC" > "$T/idem-rec1.log" 2>&1; RR1=$?
+python3 -c "import json;g=json.load(open('$I'));json.dump({k:g[k] for k in ('work','attempts','edges')},open('$T/idem-snap.json','w'),sort_keys=True)"
+node run.mjs "$I" --exec "$EXEC" > "$T/idem-rec2.log" 2>&1; RR2=$?
+assert "7a. both recoveries exit 0 and settle everything" "
+import json;g=json.load(open('$I'))
+assert ($RR1, $RR2) == (0, 0), ($RR1, $RR2)
+assert not any(a['state']=='running' for a in g['attempts'])
+assert len(g['attempts'])==4, [(a['id'],a['state']) for a in g['attempts']]"
+assert "7b. the second recovery changed no settled history: work, attempts and edges byte-identical" "
+import json
+a=json.load(open('$T/idem-snap.json'));b=json.load(open('$I'))
+assert json.dumps({k:b[k] for k in ('work','attempts','edges')},sort_keys=True)==json.dumps(a,sort_keys=True)"
+assert "7c. attempt ids unique, each branch merged once" "
+import json, subprocess;g=json.load(open('$I'))
+ids=[a['id'] for a in g['attempts']]
+assert len(ids)==len(set(ids)), ids
+tips=subprocess.run(['git','-C','$T/pursuit','log','--format=%H','ost/idem/trunk'],capture_output=True,text=True).stdout.split()
+assert len(tips)==len(set(tips)), tips
+for a in [x for x in g['attempts'] if x['state']=='done']:
+    subprocess.run(['git','-C','$T/pursuit','merge-base','--is-ancestor',a['sandbox']['branch'],'ost/idem/trunk'],check=True)"
+
+echo "== 8: status and the viewer derivation agree after recovery"
+node cli.mjs status "$I" --json > "$T/idem-status.json" 2>&1; ST8=$?
+node --input-type=module -e "
+import { readFileSync } from 'node:fs';
+import { derive } from './viewer/state.mjs';
+const g = JSON.parse(readFileSync('$I', 'utf8'));
+const status = JSON.parse(readFileSync('$T/idem-status.json', 'utf8'));
+const S = derive(g, { index: true }), ready = S.readyIds();
+const work = {};
+for (const w of g.work) { const k = S.stateOf(w.id, ready); work[k] = (work[k] ?? 0) + 1; }
+const attempts = { total: g.attempts.length, running: 0, done: 0, walled: 0, failed: 0, unknown: 0 };
+for (const a of g.attempts) attempts[a.state] = (attempts[a.state] ?? 0) + 1;
+const sw = status.work, sa = status.attempts;
+const keys = ['ready','running','done','walled','waiting','blocked','exhausted','proposed','rejected','mapped'];
+const wok = keys.every((k) => (work[k] ?? 0) === sw[k]) && sw.total === g.work.length;
+const aok = ['total','running','done','walled','failed','unknown'].every((k) => attempts[k] === sa[k]);
+if ($ST8 !== 0 || !wok || !aok) { console.log(JSON.stringify({ exit: $ST8, work, sw, attempts, sa })); process.exit(1); }
+" > "$T/agree.log" 2>&1 \
+  && pass "8a. every work bucket and attempt count matches" \
+  || fail "8a. $(cat "$T/agree.log")"
+
+echo "== 9: every writer holds the lock"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "ser9", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 5050},
+     "ontology": {"kinds": {"t": {"claim": ["statement"], "id": "t-{statement}",
+       "what": "Do {statement}", "gate": "sleep 12"}}},
+     "work": [{"id": "w-g", "kind": "t", "claim": {"statement": "s"}, "what": "gated"},
+              {"id": "w-p", "what": "plain", "params": {"fake": {"sleep": 0}}}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/ser9.json", "w"), indent=2)
+PY
+S9="$T/ser9.json"
+node run.mjs "$S9" --gate > "$T/ser9-gate.log" 2>&1 & SG9=$!
+sleep 3
+node run.mjs "$S9" --exec "$EXEC" --max-launches 1 --only w-p > "$T/ser9-run1.log" 2>&1 & SR1=$!
+node run.mjs "$S9" --exec "$EXEC" --max-launches 1 --only w-p > "$T/ser9-run2.log" 2>&1 & SR2=$!
+wait $SR1; RR1=$?; wait $SR2; RR2=$?
+wait $SG9; RG9=$?
+assert "9a. both starters mid-gate refused, naming the gate, and launched nothing" "
+l1, l2 = open('$T/ser9-run1.log').read(), open('$T/ser9-run2.log').read()
+assert ($RR1, $RR2) == (1, 1), ($RR1, $RR2)
+for t in (l1, l2):
+    assert 'already live' in t and 'gating the board' in t, t[-400:]
+    assert ' start ' not in t, t[-400:]"
+assert "9b. the gate finished clean, wrote its verdict, erased nothing, orphaned nothing" "
+import json, subprocess;t=open('$T/ser9-gate.log').read()
+assert $RG9 == 0, ($RG9, t[-400:])
+g=json.load(open('$S9'))
+assert g['attempts'] == [], g['attempts']
+assert (g['work'][0].get('gate') or {}).get('state') == 'ok', g['work'][0]
+out=subprocess.run(['git','-C','$T/pursuit','branch','--list','ost/ser9/*'],capture_output=True,text=True).stdout
+assert 'a-000' not in out, out
+import os;assert not os.path.exists('$T/ser9.run.json.lock')"
+# A live squatter for the decision paths: holds the lock with this process verifiable.
+squat() { # $1=board $2=seconds
+node --input-type=module -e "
+import { claimRunLock, lockPathOf, removeLock } from './lib/liveness.mjs';
+import { captureIdentity } from './lib/process-identity.mjs';
+const board = process.argv[1], secs = Number(process.argv[2]);
+const c = await claimRunLock(lockPathOf(board.replace(/\.json$/, '') + '.run.json'),
+  { file: board, identity: captureIdentity(process.pid, { runnerFile: board }), started: new Date().toISOString() });
+if (!c.claimed) process.exit(1);
+await new Promise((r) => setTimeout(r, secs * 1000));
+removeLock(lockPathOf(board.replace(/\.json$/, '') + '.run.json'));" "$1" "$2" &
+}
+mkboard ser9c 1 0 5060 1
+C9="$T/ser9c.json"
+python3 - "$T" <<'PY'
+import json, sys
+g = json.load(open(f"{sys.argv[1]}/ser9c.json"))
+g["work"].append({"id": "w-x", "what": "proposed thing", "needs": [], "status": "proposed", "found_by": ["a-0000"], "found_at": "t"})
+json.dump(g, open(f"{sys.argv[1]}/ser9c.json", "w"), indent=2)
+PY
+squat "$C9" 12; SQ9=$!; sleep 2
+node run.mjs "$C9" --confirm w-x > "$T/ser9c-confirm1.log" 2>&1; RC1=$?
+node init.mjs "$C9" --force --item "replacement" > "$T/ser9c-init.log" 2>&1; RI9=$?
+wait $SQ9
+assert "9c. confirm and init refuse beside a live holder, changing nothing" "
+import json
+t = open('$T/ser9c-confirm1.log').read()
+assert $RC1 == 1, ($RC1, t[-300:])
+assert 'running this graph' in t, t[-300:]
+t = open('$T/ser9c-init.log').read()
+assert $RI9 == 2, ($RI9, t[-300:])
+assert 'holds its lock' in t, t[-300:]
+g = json.load(open('$C9'))
+assert any(w['id'] == 'w-x' and w['status'] == 'proposed' for w in g['work']), g['work']
+assert any(w['id'] == 'w-0' for w in g['work']), g['work']"
+node run.mjs "$C9" --confirm w-x > "$T/ser9c-confirm2.log" 2>&1; RC2=$?
+assert "9d. after release the confirm lands, and no lock is left" "
+import json, os;t=open('$T/ser9c-confirm2.log').read()
+assert $RC2 == 0, ($RC2, t[-300:])
+g=json.load(open('$C9'))
+assert any(w['id'] == 'w-x' and w['status'] == 'active' for w in g['work']), g['work']
+assert not os.path.exists('$T/ser9c.run.json.lock')"
+sleep 0.2 & DEAD9=$!; wait $DEAD9 2>/dev/null || true
+python3 -c "
+import json;json.dump({'pid':$DEAD9,'identity':{'method':'proc','pid':$DEAD9,'boot':'gone','start':'0'},
+ 'file':'$C9','started':'t','role':'run'}, open('$T/ser9c.run.json.lock','w'))"
+node run.mjs "$C9" --reject w-x --reject-why "stale-lock probe" > "$T/ser9c-reject.log" 2>&1; RJ9=$?
+assert "9e. a decision breaks a stale lock and proceeds, leaving none behind" "
+import json, os;t=open('$T/ser9c-reject.log').read()
+assert $RJ9 == 0, ($RJ9, t[-300:])
+assert not os.path.exists('$T/ser9c.run.json.lock')"
+
+echo "== 10: startup, unverifiable owners, stranded locks"
+mkboard ser10 1 0 5070 1
+S10="$T/ser10.json"
+squat "$S10" 10; SQ10=$!; sleep 2
+node run.mjs "$S10" --stop > "$T/ser10-stop.log" 2>&1; RS10=$?
+wait $SQ10
+assert "10a. stop names a starting runner and exits 10, signalling nothing" "
+t=open('$T/ser10-stop.log').read()
+assert $RS10 == 10, ($RS10, t[-300:])
+assert 'is starting' in t and 'nothing to signal' in t, t[-300:]"
+sleep 300 & UV10=$!
+python3 -c "
+import json;json.dump({'pid':$UV10,'identity':{},'file':'$S10','started':'t'}, open('$T/ser10.run.json.lock','w'))"
+node run.mjs "$S10" --exec "$EXEC" --max-launches 1 > "$T/ser10-unver.log" 2>&1; RU10=$?
+assert "10b. an unverifiable lock owner refuses fail-closed and keeps its lock" "
+import os, subprocess;t=open('$T/ser10-unver.log').read()
+assert $RU10 == 1, ($RU10, t[-300:])
+assert 'already live' in t, t[-300:]
+assert os.path.exists('$T/ser10.run.json.lock')
+state=subprocess.run(['ps','-p','$UV10','-o','stat='],capture_output=True,text=True).stdout.strip()
+assert not state or not state.startswith('Z'), state"
+node init.mjs "$S10" --force --item "replacement" > "$T/ser10-init-uv.log" 2>&1; RI10=$?
+assert "10c. init --force fails closed beside the same holder, changing nothing" "
+import json;t=open('$T/ser10-init-uv.log').read()
+assert $RI10 == 2, ($RI10, t[-300:])
+assert 'cannot be verified' in t, t[-300:]
+g=json.load(open('$S10'))
+assert [w['id'] for w in g['work']]==['w-0'], [w['id'] for w in g['work']]"
+node run.mjs "$S10" --stop > "$T/ser10-stop-uv.log" 2>&1; RS10b=$?
+assert "10d. stop names the unverifiable holder and exits 10, signalling nothing" "
+import subprocess;t=open('$T/ser10-stop-uv.log').read()
+assert $RS10b == 10, ($RS10b, t[-300:])
+assert 'cannot be verified' in t and 'Nothing is signalled' in t, t[-300:]
+assert 'nothing to stop' not in t, t[-300:]
+state=subprocess.run(['ps','-p','$UV10','-o','stat='],capture_output=True,text=True).stdout.strip()
+assert not state or not state.startswith('Z'), state"
+kill $UV10 2>/dev/null || true; rm -f "$T/ser10.run.json.lock"
+node init.mjs "$S10" --force --item "replacement" > "$T/ser10-init-ok.log" 2>&1; RI10b=$?
+assert "10e. with no holder init lands, claims as init, and releases the lock" "
+import json, os;t=open('$T/ser10-init-ok.log').read()
+assert $RI10b == 0, ($RI10b, t[-300:])
+assert [w['id'] for w in json.load(open('$S10'))['work']]==['w-replacement']
+assert not os.path.exists('$T/ser10.run.json.lock')"
+mkboard ser10k 1 8 5080 1
+K10="$T/ser10k.json"
+node run.mjs "$K10" --exec "$EXEC" > "$T/ser10k-run.log" 2>&1 & KR10=$!
+for _ in $(seq 1 100); do [ -f "$T/ser10k.run.json.lock" ] && break; sleep 0.2; done
+[ -f "$T/ser10k.run.json.lock" ] || fail "no lock ever appeared (stranded-lock setup)"
+kill -9 $KR10 2>/dev/null; sleep 1
+node run.mjs "$K10" --stop --now > "$T/ser10k-kill.log" 2>&1; sleep 2
+node run.mjs "$K10" --exec "$EXEC" > "$T/ser10k-rec.log" 2>&1; RK10=$?
+assert "10f. a kill -9 stranded lock breaks on next launch; recovery completes" "
+import json;t=open('$T/ser10k-rec.log').read()
+assert $RK10 == 0, ($RK10, t[-500:])
+assert 'already live' not in t, t[-500:]
+g=json.load(open('$K10'))
+assert not any(a['state']=='running' for a in g['attempts'])
+assert all(a['state'] in ('done','failed') for a in g['attempts']), [(a['id'],a['state']) for a in g['attempts']]"
+
+echo "== 11: a decision never writes a pre-claim snapshot"
+# A decides on a ~70MB board (parse stretches load-to-claim past a second) while B's
+# precomputed flip swaps in by hardlink after A's read but before A's claim. Without
+# the re-read A's checkpoint restores the snapshot and B's change is gone.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+work = [{"id": "w-y", "what": "A decides this", "needs": [], "status": "proposed",
+         "found_by": ["a-0"], "found_at": "t"},
+        {"id": "w-x", "what": "B flips this", "needs": [], "status": "proposed",
+         "found_by": ["a-0"], "found_at": "t"}]
+work += [{"id": f"w-pad-{i}", "what": "padding " + "x" * 100, "needs": []} for i in range(450000)]
+g = {"graph": "reread", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 5090},
+     "work": work, "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/rr.json", "w"))
+for w in g["work"]:
+    if w["id"] == "w-x": w["status"] = "active"; w["decided_at"] = "t"
+json.dump(g, open(f"{T}/rr-flipped.json", "w"))
+PY
+node run.mjs "$T/rr.json" --confirm w-y > "$T/rr-A.log" 2>&1 & APID=$!
+sleep 0.25
+ln -f "$T/rr-flipped.json" "$T/rr.json"
+wait $APID; RA11=$?
+assert "11a. the confirm lands and the interleaved change survives it" "
+import json;g=json.load(open('$T/rr.json'))
+st={w['id']:w.get('status') for w in g['work'] if w['id'] in ('w-x','w-y')}
+assert $RA11 == 0, open('$T/rr-A.log').read()[-300:]
+assert st=={'w-x':'active','w-y':'active'}, st"
+
+echo "== 12: one board, every spelling"
+mkboard alias 4 8 5160 2
+AL="$T/alias.json"
+node run.mjs "$AL" --exec "$EXEC" > "$T/alias-A.log" 2>&1 & APID=$!
+for _ in $(seq 1 50); do [ -f "$T/alias.run.json" ] && break; sleep 0.2; done
+if [ -f "$T/ALIAS.json" ]; then
+  echo "  (case-insensitive board: aliases resolve to one file)"
+  node run.mjs "$T/ALIAS.json" --exec "$EXEC" --max-launches 1 > "$T/alias-B.log" 2>&1; RB12=$?
+  node run.mjs "$T/alias.JSON" --exec "$EXEC" --max-launches 1 > "$T/alias-C.log" 2>&1; RC12=$?
+  assert "12a. a case alias of a live board refuses instead of breaking its lock" "
+t=open('$T/alias-B.log').read()
+assert $RB12 == 1, ($RB12, t[-300:])
+assert 'already live' in t, t[-300:]
+assert ' start ' not in t, t[-300:]"
+  assert "12b. an extension-case alias shares the same sidecars and refuses too" "
+t=open('$T/alias-C.log').read()
+assert $RC12 == 1, ($RC12, t[-300:])
+assert 'already live' in t, t[-300:]
+assert ' start ' not in t, t[-300:]"
+  assert "12c. aliases resolve to one canonical string and one lock file" "
+import glob, subprocess
+out=subprocess.run(['node','--input-type=module','-e',
+ \"import { canonicalPath, sameFile } from './lib/process-identity.mjs';\" +
+ \"console.log(JSON.stringify({a: canonicalPath('$T/alias.json'), b: canonicalPath('$T/ALIAS.json'),\" +
+ \" c: canonicalPath('$T/alias.JSON'), sab: sameFile('$T/alias.json','$T/ALIAS.json')}))\"],
+ capture_output=True, text=True, cwd='$OST')
+import json;d=json.loads(out.stdout)
+assert d['a']==d['b']==d['c'], d
+assert d['sab'] is True, d
+assert len(glob.glob('$T/*.run.json.lock'))==1, glob.glob('$T/*.run.json.lock')"
+else
+  echo "  (case-sensitive board: aliases are missing boards)"
+  node run.mjs "$T/ALIAS.json" --exec "$EXEC" --max-launches 1 > "$T/alias-B.log" 2>&1; RB12=$?
+  assert "12a. where aliases do not resolve, the missing board fails clean without launching" "
+t=open('$T/alias-B.log').read()
+assert $RB12 != 0, ($RB12, t[-300:])
+assert ' start ' not in t, t[-300:]
+assert 'already live' not in t, t[-300:]"
+fi
+# A quiet file, not the live board: checkpoint() replaces the board by rename, so a link
+# taken of it mid-run can point at a superseded inode before the check runs, which is a
+# true negative for sameFile and a flake for this assertion (2026-09-18, under full-suite load).
+echo stable > "$T/stable.txt"
+ln -f "$T/stable.txt" "$T/stable-hard.txt" 2>/dev/null || fail "hardlink setup failed"
+node --input-type=module -e "
+import { sameFile } from './lib/process-identity.mjs';
+if (!sameFile('$T/stable.txt', '$T/stable-hard.txt')) { console.log('hardlink not identical'); process.exit(1); }" \
+  && pass "12d. sameFile identifies hardlinks by device and inode on any filesystem" \
+  || fail "12d. sameFile missed a hardlink"
+kill $APID 2>/dev/null; sleep 1
+node run.mjs "$AL" --stop --now > "$T/alias-kill.log" 2>&1; sleep 2
+
+echo "== 13: pre-lock engines are fenced and named"
+mkdir -p "$T/oldeng"
+# The legacy side rides vendored (verbatim d632f2f bytes) so this section runs in a
+# shallow checkout too; where the commit is present the fixture is diffed against it,
+# so drift fails loudly instead of silently testing some other engine.
+(cd "$OST/rehearsals/fixtures/prelock-d632f2f" && tar -cf - .) | tar -x -C "$T/oldeng"
+if git cat-file -e d632f2f^{commit} 2>/dev/null; then
+  mkdir -p "$T/oldref"
+  git archive d632f2f run.mjs lib sandbox.mjs viewer/state.mjs executors/fake.sh 2>/dev/null | tar -x -C "$T/oldref"
+  diff -r "$T/oldref" "$T/oldeng" > /dev/null 2>&1 || fail "13. vendored pre-lock engine drifted from d632f2f"
+fi
+OLD="$T/oldeng/run.mjs"; OLDEXEC="bash $T/oldeng/executors/fake.sh"
+node "$OLD" > "$T/old-usage.log" 2>&1; ORC=$?
+[ "$ORC" = 2 ] && grep -q "usage: node run.mjs" "$T/old-usage.log" || fail "13. extracted old engine does not load (setup)"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+base = {"concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 5170}}
+g = dict(base, graph="mixold",
+     work=[{"id": "w-a", "what": "do a", "params": {"fake": {"sleep": 12}}}],
+     edges=[], attempts=[])
+json.dump(g, open(f"{T}/mixold.json", "w"), indent=2)
+g2 = dict(base, graph="mixgate",
+     ontology={"kinds": {"t": {"claim": ["statement"], "id": "t-{statement}",
+       "what": "Do {statement}", "gate": "sleep 10"}}},
+     work=[{"id": "w-g", "kind": "t", "claim": {"statement": "s"}, "what": "gated"}],
+     edges=[], attempts=[])
+g2["sandbox"] = dict(base["sandbox"], port_base=5171)
+json.dump(g2, open(f"{T}/mixgate.json", "w"), indent=2)
+PY
+(cd "$T/oldeng" && node run.mjs "$T/mixold.json" --exec "$OLDEXEC" > "$T/mix-old.log" 2>&1 & echo $! > "$T/old.pid")
+for _ in $(seq 1 50); do [ -f "$T/mixold.run.json" ] && break; sleep 0.2; done
+node run.mjs "$T/mixold.json" --exec "$EXEC" --max-launches 1 > "$T/mix-new.log" 2>&1; RN13=$?
+assert "13a. new starter beside a live pre-lock runner refuses, naming it" "
+t=open('$T/mix-new.log').read()
+assert $RN13 == 1, ($RN13, t[-300:])
+assert 'already live' in t and 'pre-lock engine' in t, t[-300:]
+assert ' start ' not in t, t[-300:]"
+kill -9 "$(cat "$T/old.pid")" 2>/dev/null; sleep 1
+node run.mjs "$T/mixold.json" --stop --now > "$T/mix-kill.log" 2>&1; sleep 2
+node run.mjs "$T/mixold.json" --exec "$EXEC" --max-launches 2 > "$T/mix-rec.log" 2>&1; RR13=$?
+assert "13b. recovery over old-written records completes: killed cell swept, nothing lost" "
+import json;t=open('$T/mix-rec.log').read()
+assert $RR13 == 0, ($RR13, t[-500:])
+g=json.load(open('$T/mixold.json'))
+assert [(a['id'],a['state']) for a in g['attempts']]==[('a-0001','failed')], [(a['id'],a['state']) for a in g['attempts']]"
+node run.mjs "$T/mixgate.json" --gate > "$T/mix-gate.log" 2>&1 & GPID13=$!
+for _ in $(seq 1 50); do [ -f "$T/mixgate.run.json" ] && break; sleep 0.2; done; sleep 1
+(cd "$T/oldeng" && node run.mjs "$T/mixgate.json" --exec "$OLDEXEC" --max-launches 1 > "$T/mix-old2.log" 2>&1); RO13=$?
+wait $GPID13; RG13=$?
+assert "13c. old starter beside a new gate refuses on the holder runfile; gate intact" "
+import json, subprocess
+t=open('$T/mix-old2.log').read()
+assert $RO13 == 1, ($RO13, t[-300:])
+assert 'already live' in t, t[-300:]
+assert $RG13 == 0, open('$T/mix-gate.log').read()[-300:]
+g=json.load(open('$T/mixgate.json'))
+assert g['attempts']==[], g['attempts']
+assert (g['work'][0].get('gate') or {}).get('state')=='ok'
+out=subprocess.run(['git','-C','$T/pursuit','branch','--list','ost/mixgate/*'],capture_output=True,text=True).stdout
+assert 'a-000' not in out, out"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+work = [{"id": "w-a", "what": "do a", "params": {"fake": {"sleep": 6}}}]
+work += [{"id": f"w-pad-{i}", "what": "padding " + "x" * 100, "needs": []} for i in range(450000)]
+g = {"graph": "mtime", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 5172},
+     "work": work, "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/mtime.json", "w"), indent=2)
+PY
+node run.mjs "$T/mtime.json" --exec "$EXEC" --max-launches 1 > "$T/mtime.log" 2>&1 & MPID=$!
+python3 - "$T" <<'PY' > "$T/mtime-gap.txt" 2>&1
+import os, sys, time
+T = sys.argv[1]
+t0 = time.time(); lock_t = run_t = None
+while time.time() - t0 < 30:
+    if lock_t is None and os.path.exists(f"{T}/mtime.run.json.lock"): lock_t = time.time() - t0
+    if run_t is None and os.path.exists(f"{T}/mtime.run.json"): run_t = time.time() - t0
+    if lock_t is not None and run_t is not None: break
+    time.sleep(0.025)
+print(f"{(run_t - lock_t) * 1000:.0f}")
+PY
+GAP13=$(cat "$T/mtime-gap.txt")
+kill -9 $MPID 2>/dev/null; sleep 1
+node run.mjs "$T/mtime.json" --stop --now > "$T/mtime-kill.log" 2>&1; sleep 2
+assert "13d. the runfile lands with the claim (${GAP13}ms), before any re-read parse" "
+assert $GAP13 < 500, '$GAP13 ms between lock and runfile'"
+
+echo ""
+[ "$fails" = 0 ] && echo "  all assertions passed" || echo "  $fails assertion(s) failed"
+exit $((fails > 0))

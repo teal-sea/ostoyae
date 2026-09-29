@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# A correction, rehearsed end to end with the fake executor: zero model calls, a throwaway
+# pursuit, every path the fix adds walked once and asserted on the record it leaves.
+#
+#   bin/rehearse-correction       prints one line per assertion, exits non-zero if any fails
+#
+# The defect this is about, from wiki/open.md question 9: an agent that finds the statement it
+# was given is false hands back a correction, the correction names the same declaration, and
+# until 2026-09-04 it was absorbed into the item it corrects -- which left the wall with nothing
+# found, made it `failed` rather than `walled`, and left the false statement active for the next
+# agent. Six items on the lean-eval board, eleven attempts, $28.26.
+#
+# What is rehearsed:
+#   1. a correction lands as its own item, says what it revises, and the revised item says so too
+#   2. the attempt that found it is `walled`, not `failed`
+#   3. two agents proposing the same correction still make one item with two finders, which is
+#      the property the ontology was built for and the thing the fix must not break
+#   4. a true duplicate is still joined, not revised
+#   5. confirming a revision closes the statement it revises, with the reason and the id
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-correction.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+[ -n "${KEEP:-}" ] && echo "  workspace $T"
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G="$T/correction.json"
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+FALSE = "theorem Foo.bar : (D : Type) := sorry"
+FIXED = "theorem Foo.bar.{u} : (D : Type u) := sorry"
+wall = "The statement is false as written: D is pinned to Type 0."
+# w-a is handed a false statement and hands back a correction of it: same decl, different
+# statement. w-b hands back the identical correction, to prove two finders still make one item.
+# w-c hands back the claim exactly as the graph already holds it, which is a plain duplicate.
+g = {
+  "graph": "rehearse-correction", "concurrency": 1, "max_attempts": 1,
+  "ontology": {"kinds": {"lemma": {
+      "claim": ["decl", "statement"], "evidence": ["why"],
+      "id": "lemma-{decl}", "what": "Prove {decl}", "check": "true"}}},
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4920},
+  "work": [
+    {"id": "w-lemma-foo-bar", "kind": "lemma",
+     "claim": {"decl": "Foo.bar", "statement": FALSE},
+     "what": "Prove Foo.bar", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "wall", "wall_report": {"wall": wall, "work": [
+        {"id": "w-my-fixed-name", "kind": "lemma",
+         "claim": {"decl": "Foo.bar", "statement": FIXED}, "evidence": {"why": "universes"}}]}}}},
+    {"id": "w-second", "kind": "lemma",
+     "claim": {"decl": "Second.thing", "statement": "theorem Second.thing : True := trivial"},
+     "what": "Prove Second.thing", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "wall", "wall_report": {"wall": wall, "work": [
+        {"id": "w-also-fixed", "kind": "lemma",
+         "claim": {"decl": "Foo.bar", "statement": FIXED}, "evidence": {"why": "same fix"}}]}}}},
+    {"id": "w-third", "kind": "lemma",
+     "claim": {"decl": "Third.thing", "statement": "theorem Third.thing : True := trivial"},
+     "what": "Prove Third.thing", "check": "true", "needs": [],
+     "params": {"fake": {"prove": "wall", "wall_report": {"wall": wall, "work": [
+        {"id": "w-dup", "kind": "lemma",
+         "claim": {"decl": "Foo.bar", "statement": FALSE}, "evidence": {"why": "duplicate"}}]}}}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(g, open(f"{T}/correction.json", "w"), indent=2)
+PY
+
+echo "== the run"
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" > "$T/run.log" 2>&1
+echo "  exit $?; $(grep -c ' start ' "$T/run.log") launches"
+
+assert "1. the correction landed as its own item, not absorbed into the statement it corrects" "
+import json;g=json.load(open('$G'))
+r=[w for w in g['work'] if w.get('revises')=='w-lemma-foo-bar']
+assert len(r)==1, [w['id'] for w in g['work']]
+assert r[0]['claim']['statement'].startswith('theorem Foo.bar.{u}'), r[0]['claim']
+assert r[0]['id'].startswith('w-lemma-foo-bar-'), r[0]['id']
+assert r[0]['status']=='proposed', r[0]['status']"
+assert "2. the item it corrects says a correction exists" "
+import json;g=json.load(open('$G'))
+o=[w for w in g['work'] if w['id']=='w-lemma-foo-bar'][0]
+assert len(o.get('revised_by',[]))==1, o.get('revised_by')"
+assert "3. the attempt that found it is walled, not failed" "
+import json;g=json.load(open('$G'))
+a=[x for x in g['attempts'] if x['of']=='w-lemma-foo-bar'][0]
+assert a['state']=='walled', a['state']
+assert len(a['result'].get('found',[]))==1, a['result'].get('found')"
+assert "4. a second agent proposing the same correction joins it: one item, two finders" "
+import json;g=json.load(open('$G'))
+r=[w for w in g['work'] if w.get('revises')=='w-lemma-foo-bar']
+assert len(r)==1, [w['id'] for w in r]
+assert len(r[0]['found_by'])==2, r[0]['found_by']"
+assert "5. a true duplicate is still joined to the item it duplicates, not made a revision" "
+import json;g=json.load(open('$G'))
+o=[w for w in g['work'] if w['id']=='w-lemma-foo-bar'][0]
+assert len([w for w in g['work'] if w.get('revises')])==1
+a=[x for x in g['attempts'] if x['of']=='w-third'][0]
+assert 'a-' in ' '.join(o['found_by']), o['found_by']
+assert a['id'] in o['found_by'], (a['id'], o['found_by'])"
+assert "6. the run said what it did, in words a reader can act on" "
+t=open('$T/run.log').read()
+assert 'a revision of it' in t, t[-700:]"
+
+echo "== confirming the revision"
+REV=$(python3 -c "
+import json;g=json.load(open('$G'))
+print([w['id'] for w in g['work'] if w.get('revises')][0])")
+node run.mjs "$G" --confirm "$REV" > "$T/confirm.log" 2>&1
+assert "7. confirming the correction closed the statement it replaces, with the reason and the id" "
+import json;g=json.load(open('$G'))
+o=[w for w in g['work'] if w['id']=='w-lemma-foo-bar'][0]
+r=[w for w in g['work'] if w['id']=='$REV'][0]
+assert r['status']=='active', r['status']
+assert o['status']=='rejected', o['status']
+assert '$REV' in o.get('rejected_why',''), o.get('rejected_why')
+assert o.get('decided_at')"
+assert "8. and said so on the way past" "
+t=open('$T/confirm.log').read()
+assert 'superseded by' in t, t"
+
+echo ""
+[ "$fails" = 0 ] && echo "  all assertions passed" || echo "  $fails assertion(s) failed"
+exit $((fails > 0))

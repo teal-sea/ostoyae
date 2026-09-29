@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# install.sh, rehearsed into a throwaway HOME. No network: sources are this checkout, a file://
+# git repository, and a tarball served from 127.0.0.1.
+#
+#   bin/rehearse-install         prints one line per assertion, exits non-zero if any fails
+#
+#   1. installs from OSTOYAE_SOURCE into HOME/.ostoyae, links HOME/.local/bin/ostoyae, prints the
+#      PATH line when that directory is not on PATH, and ends with `ostoyae demo`
+#   2. the linked command runs `ostoyae demo --no-viewer` to exit 0
+#   3. re-running upgrades in place, leaves no staging or old copies behind, and still runs
+#   4. `cat install.sh | bash` works, as `curl | bash` will
+#   5. installs a given ref from a git repository and records its commit
+#   6. falls back to the tarball when git cannot fetch
+#   7. a Node older than 22 refuses with the install hint and installs nothing
+#   8. refuses to replace a HOME/.ostoyae it did not make
+#   9. --uninstall removes the install and the link and leaves the board state directory
+#  10. the installed tree has no .git and passes node --check on cli.mjs
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-install.XXXXXX")" && pwd -P)
+SERVER=""
+trap '[ -n "$SERVER" ] && kill "$SERVER" 2>/dev/null; [ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+export NO_COLOR=1 OSTOYAE_NO_OPEN=1
+fails=0
+ran=0
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+check() { if eval "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G() { git -c user.name=r -c user.email=r@x "$@"; }
+
+# A PATH with the requirements and without HOME/.local/bin.
+NODE_DIR=$(dirname "$(command -v node)")
+BASE_PATH="$NODE_DIR:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v python3)"):$(dirname "$(command -v git)")"
+inst() { # home, then env assignments, then args after --
+  local home="$1"; shift
+  env -i HOME="$home" PATH="$BASE_PATH" SHELL=/bin/bash TMPDIR="$T" "$@"
+}
+
+H1="$T/h1"; mkdir -p "$H1"
+inst "$H1" OSTOYAE_SOURCE="$OST" bash "$OST/install.sh" > "$T/1.out" 2>&1; rc=$?
+check "1. installs from OSTOYAE_SOURCE, links the command, prints the PATH line, ends with ostoyae demo" \
+  "[ $rc = 0 ] && [ -f '$H1/.ostoyae/cli.mjs' ] && [ \"\$(readlink '$H1/.local/bin/ostoyae')\" = '$H1/.ostoyae/bin/ostoyae' ] \
+   && grep -qF 'export PATH=\"\$HOME/.local/bin:\$PATH\"' '$T/1.out' && tail -3 '$T/1.out' | grep -q 'next:  ostoyae demo'"
+(cd "$T" && inst "$H1" OSTOYAE_STATE_DIR="$T/state1" PATH="$H1/.local/bin:$BASE_PATH" ostoyae demo --no-viewer > "$T/2.out" 2>&1); rc=$?
+check "2. the linked ostoyae runs demo --no-viewer to exit 0" "[ $rc = 0 ]"
+
+echo '# marker from before the upgrade' > "$H1/.ostoyae/old-only.txt"
+inst "$H1" OSTOYAE_SOURCE="$OST" bash "$OST/install.sh" > "$T/3.out" 2>&1; rc=$?
+check "3. re-running upgrades, leaves no staging or old copies, and still runs" \
+  "[ $rc = 0 ] && grep -q 'upgraded ostoyae' '$T/3.out' && [ ! -e '$H1/.ostoyae/old-only.txt' ] \
+   && [ -z \"\$(ls -A '$H1' | grep -E '^\\.ostoyae-(stage|old)')\" ] && '$H1/.local/bin/ostoyae' version"
+
+H4="$T/h4"; mkdir -p "$H4"
+cat "$OST/install.sh" | inst "$H4" OSTOYAE_SOURCE="$OST" bash > "$T/4.out" 2>&1; rc=$?
+check "4. cat install.sh | bash installs" "[ $rc = 0 ] && '$H4/.local/bin/ostoyae' version"
+
+# 5: a git repository at a ref that is not main.
+git init -q -b main "$T/src" && (cd "$OST" && git ls-files -z | tar --null -T - -cf -) | (cd "$T/src" && tar -xf -)
+(cd "$T/src" && G add -A && G commit -qm snapshot && git branch -q release)
+SRC_COMMIT=$(git -C "$T/src" rev-parse release)
+H5="$T/h5"; mkdir -p "$H5"
+inst "$H5" OSTOYAE_REPO="file://$T/src" bash "$OST/install.sh" --ref release > "$T/5.out" 2>&1; rc=$?
+check "5. installs --ref from a git repository and records its commit" \
+  "[ $rc = 0 ] && grep -q 'commit=$SRC_COMMIT' '$H5/.ostoyae/.ostoyae-install' && '$H5/.local/bin/ostoyae' version"
+check "10. the installed tree has no .git and cli.mjs passes node --check" \
+  "[ ! -e '$H5/.ostoyae/.git' ] && node --check '$H5/.ostoyae/cli.mjs'"
+
+# 6: a URL git cannot fetch from. Needs curl, which install.sh uses only for this fallback.
+# It serves /archive/<ref>.tar.gz the way GitHub does.
+if ! command -v curl >/dev/null 2>&1; then echo "  skip  6. curl is not installed here"; else
+mkdir -p "$T/www/archive" && (cd "$T" && git -C src archive --prefix=Ostoyae-main/ -o "$T/www/archive/main.tar.gz" release)
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+(cd "$T/www" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 > "$T/http.log" 2>&1) & SERVER=$!; disown "$SERVER"
+for _ in $(seq 50); do curl -fs "http://127.0.0.1:$PORT/archive/main.tar.gz" -o /dev/null && break; sleep 0.1; done
+H6="$T/h6"; mkdir -p "$H6"
+inst "$H6" OSTOYAE_REPO="http://127.0.0.1:$PORT" bash "$OST/install.sh" > "$T/6.out" 2>&1; rc=$?
+check "6. falls back to the tarball when git cannot fetch" \
+  "[ $rc = 0 ] && grep -q 'trying the tarball' '$T/6.out' && '$H6/.local/bin/ostoyae' version"
+fi
+
+# 7: a Node that is too old, first on PATH.
+mkdir -p "$T/oldnode"
+# shellcheck disable=SC2016  # $1 belongs to the stub, not to this script
+printf '#!/bin/sh\ncase "$1" in -p) echo 18 ;; --version) echo v18.20.0 ;; esac\n' > "$T/oldnode/node" && chmod +x "$T/oldnode/node"
+H7="$T/h7"; mkdir -p "$H7"
+inst "$H7" OSTOYAE_SOURCE="$OST" PATH="$T/oldnode:$BASE_PATH" bash "$OST/install.sh" > "$T/7.out" 2>&1; rc=$?
+check "7. Node older than 22 refuses with the install hint, nothing installed" \
+  "[ $rc != 0 ] && grep -q 'too old' '$T/7.out' && grep -q 'nvm install 22' '$T/7.out' && [ ! -e '$H7/.ostoyae' ] && [ ! -e '$H7/.local/bin/ostoyae' ]"
+
+H8="$T/h8"; mkdir -p "$H8/.ostoyae" && echo mine > "$H8/.ostoyae/notes.txt"
+inst "$H8" OSTOYAE_SOURCE="$OST" bash "$OST/install.sh" > "$T/8.out" 2>&1; rc=$?
+check "8. refuses to replace a ~/.ostoyae it did not make" \
+  "[ $rc != 0 ] && grep -q 'not made by this installer' '$T/8.out' && [ \"\$(cat '$H8/.ostoyae/notes.txt')\" = mine ]"
+
+mkdir -p "$H1/.local/state/ostoyae/boards" && echo keep > "$H1/.local/state/ostoyae/boards/x"
+inst "$H1" bash "$OST/install.sh" --uninstall > "$T/9.out" 2>&1; rc=$?
+check "9. --uninstall removes the install and link, leaves board state" \
+  "[ $rc = 0 ] && [ ! -e '$H1/.ostoyae' ] && [ ! -e '$H1/.local/bin/ostoyae' ] && [ -f '$H1/.local/state/ostoyae/boards/x' ]"
+
+echo
+if [ "$fails" = 0 ]; then echo "  rehearse-install: $ran assertions, all passing"; else echo "  rehearse-install: $fails of $ran FAILED"; fi
+[ "$fails" = 0 ]

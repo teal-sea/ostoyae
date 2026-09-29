@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# The agent can run its item's check, rehearsed. Zero model calls: a stub `claude` records the
+# arguments claude.sh builds, and a stub executor records what the runner hands a cell.
+#
+#   bin/rehearse-check           prints one line per assertion, exits non-zero if any fails
+#
+# Why this exists. On 2026-09-27 a first-run Claude cell fixed a bug and could not run the
+# board's own check: "running `python3` needed approval, and nobody can approve anything in this
+# non-interactive session." It verified by reading.
+#
+#   1. with OSTOYAE_CHECK set, claude.sh allows exactly `Bash(<check>)`, no wildcard form
+#   2. every existing rule is still there beside it (web, Lean, declared tools, linked-path denies)
+#   3. with no OSTOYAE_CHECK, claude.sh's arguments are byte-identical to main's claude.sh
+#   4. a multi-line check gets no rule
+#   5. the runner hands a prove cell OSTOYAE_CHECK and a contract section naming the command
+#   6. an item with no check gets neither
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-check.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+export OSTOYAE_STATE_DIR="$T/state" OSTOYAE_NO_OPEN=1 NO_COLOR=1
+fails=0
+ran=0
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+export CHECK="python3 -c 'import calc; assert calc.add(2, 3) == 5'"
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; python3 -c "$2" 2>&1 | tail -3 | sed 's/^/        /'; fi; }
+G() { git -c user.name=r -c user.email=r@x "$@"; }
+
+# The stub claude: one JSON array of its arguments per call, then a result event.
+mkdir -p "$T/bin" "$T/linked"
+cat > "$T/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$ARGLOG"
+echo '{"type":"result","subtype":"success","result":"done","usage":{"output_tokens":1}}'
+STUB
+chmod +x "$T/bin/claude"
+
+cell() { # name, executor file, then env assignments
+  local name="$1" exe="$2"; shift 2
+  rm -rf "$T/cell-$name" && git init -q -b main "$T/cell-$name" && echo hi > "$T/cell-$name/README" \
+    && (cd "$T/cell-$name" && G add -A && G commit -qm start)
+  (cd "$T/cell-$name" && env "$@" ARGLOG="$T/$name.args" PATH="$T/bin:$PATH" OSTOYAE_ATTEMPT="a-$name" OSTOYAE_WORK="w-$name" \
+    bash "$exe" <<< '{"id":"a-x","of":"w-x","what":"do x","kind":"prove"}' > "$T/$name.log" 2>&1)
+}
+FULL=(OSTOYAE_WEB=1 OSTOYAE_LEAN_MCP=/nonexistent "OSTOYAE_TOOLS=bash /abs/ask-x" "OSTOYAE_LINKED=$T/linked")
+cell with "$OST/executors/claude.sh" "${FULL[@]}" "OSTOYAE_CHECK=$CHECK"
+assert "1. OSTOYAE_CHECK becomes exactly Bash(<check>), with no wildcard form" "
+import json, os; a = json.loads(open('$T/with.args').readline()); s = json.loads(a[a.index('--settings') + 1])
+allow, rule = s['permissions']['allow'], 'Bash(' + os.environ['CHECK'] + ')'
+assert rule in allow, allow
+assert not any(r.startswith('Bash(python3') and r != rule for r in allow), allow"
+assert "2. the existing rules are unchanged beside it" "
+import json; a = json.loads(open('$T/with.args').readline()); s = json.loads(a[a.index('--settings') + 1])
+p = s['permissions']
+assert p['allow'][:6] == ['WebSearch', 'WebFetch', 'Bash(lake:*)', 'Bash(lean:*)', 'mcp__lean', 'Bash(bash /abs/ask-x:*)'], p['allow']
+assert any(d.startswith('Edit(/') for d in p['deny']), p
+assert a[a.index('--disallowedTools') + 1] == 'Bash(git:*)', a"
+
+# 3: without a check, byte-identical to the executor on main.
+git -C "$OST" show main:executors/claude.sh > "$T/claude-main.sh" 2>/dev/null || cp "$OST/executors/claude.sh" "$T/claude-main.sh"
+cell new "$OST/executors/claude.sh" "${FULL[@]}"
+cell old "$T/claude-main.sh" "${FULL[@]}"
+assert "3. no OSTOYAE_CHECK: arguments byte-identical to main's claude.sh" "
+assert open('$T/new.args','rb').read() == open('$T/old.args','rb').read()"
+
+cell multi "$OST/executors/claude.sh" "OSTOYAE_CHECK=$(printf 'true\nfalse')"
+assert "4. a multi-line check gets no rule" "
+import json; a = json.loads(open('$T/multi.args').readline()); assert '--settings' not in a, a"
+
+# 5 and 6: through the runner, with a stub executor that records what the cell was handed.
+cat > "$T/bin/record.sh" <<'REC'
+#!/usr/bin/env bash
+cat > /dev/null
+{ echo "check=${OSTOYAE_CHECK:-<unset>}"; grep -A4 '^## The check' AGENTS.md || echo "no check section"; } > "$RECORD/$OSTOYAE_WORK.txt"
+echo done > "$OSTOYAE_WORK.out" && git add "$OSTOYAE_WORK.out" && git -c user.name=r -c user.email=r@x commit -qm "$OSTOYAE_WORK"
+REC
+mkdir -p "$T/record"
+git init -q -b main "$T/repo" && echo x > "$T/repo/f" && (cd "$T/repo" && G add -A && G commit -qm start)
+(cd "$T/repo" && bash "$OST/bin/ostoyae" init --exec "bash $T/bin/record.sh" --item "with a check" --check "test -f w-with-a-check.out" > /dev/null 2>&1)
+python3 - "$T/repo/ostoyae.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+g['work'].append({"id": "w-none", "what": "no check", "needs": []})
+g['sandbox']['env_passthrough'] = ['RECORD']
+json.dump(g, open(sys.argv[1], 'w'), indent=2)
+PY
+(cd "$T/repo" && RECORD="$T/record" bash "$OST/bin/ostoyae" go ostoyae.json --invocations 2 --headless > "$T/go.out" 2>&1)
+assert "5. a prove cell gets OSTOYAE_CHECK and a contract section naming the command" "
+t = open('$T/record/w-with-a-check.txt').read()
+assert 'check=test -f w-with-a-check.out' in t and '## The check' in t and '    test -f w-with-a-check.out' in t, t"
+assert "6. an item with no check gets neither" "
+t = open('$T/record/w-none.txt').read(); assert 'check=<unset>' in t and 'no check section' in t, t"
+
+echo
+if [ "$fails" = 0 ]; then echo "  rehearse-check: $ran assertions, all passing"; else echo "  rehearse-check: $fails of $ran FAILED"; fi
+[ "$fails" = 0 ]

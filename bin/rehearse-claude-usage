@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# claude.sh usage accounting, replayed: zero model calls, a stub `claude` that re-emits the
+# recorded multi-result sessions, the real executor parsing them.
+#
+#   bin/rehearse-claude-usage   prints one line per assertion, exits non-zero if any fails
+#
+# What happened: `claude -p` emitted more than one `result` event in two tinygrad A/B
+# sessions (arm A a-0002: 2 events; arm B a-0007: 4), and claude.sh overwrote usage.json
+# per event, recording only the last segment (a-0002: out=86 of 31,472). The fixtures
+# below are reconstructed from those sessions' `usage:` cell-log lines
+# (~/tinygrad-ab/evidence/cell-logs-{a,b}/): the token, cost and turn figures are the
+# recorded ones; durations and uuids are plausible fill, and only the recorded figures
+# are asserted exactly, except that durations assert max-takes-max.
+#
+#   1. two result events merge: incremental tokens and turns sum, cumulative cost takes the max
+#   2. four result events merge the same way (arm B a-0007)
+#   3. an exact-duplicate event is merged once, not double-counted
+#   4. a single result event records exactly what it says, as before
+#   5. the merged record is what the spend cap reads (not the last segment)
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-claude-usage.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; python3 -c "$2" 2>&1 | tail -3 | sed 's/^/        /'; fi; }
+
+# One result event, from one recorded `usage:` line.
+mkresult() {
+  python3 -c '
+import json, sys
+out, inp, cr, cc, cost, turns, api, uuid = sys.argv[1:9]
+print(json.dumps({"type": "result", "subtype": "success", "uuid": uuid, "session_id": "sess",
+  "usage": {"input_tokens": int(inp), "output_tokens": int(out),
+    "cache_read_input_tokens": int(cr), "cache_creation_input_tokens": int(cc)},
+  "modelUsage": {"claude-haiku-4-5-20251001": {}, "claude-sonnet-5": {}},
+  "total_cost_usd": float(cost), "duration_ms": int(api) + 3000,
+  "duration_api_ms": int(api), "num_turns": int(turns), "is_error": False, "result": "done"}))' "$@"
+}
+{
+  # arm A a-0002: usage: out=31386 in=106 cache_read=4164498 cache_create=107867 cost=$1.58 turns=53 api=412s
+  mkresult 31386 106 4164498 107867 1.58 53 412000 u-1
+  # usage: out=86 in=2 cache_read=106819 cache_create=462 cost=$1.60 turns=1 api=414s
+  mkresult 86 2 106819 462 1.60 1 414000 u-2
+} > "$T/two.jsonl"
+{
+  # arm B a-0007: out=17420 in=106 cache_read=5221186 cache_create=94503 cost=$1.61 turns=55 api=226s
+  mkresult 17420 106 5221186 94503 1.61 55 226000 v-1
+  # out=281 in=6 cache_read=356723 cache_create=903 cost=$1.68 turns=3 api=232s
+  mkresult 281 6 356723 903 1.68 3 232000 v-2
+  # out=253 in=6 cache_read=359505 cache_create=928 cost=$1.76 turns=3 api=237s
+  mkresult 253 6 359505 928 1.76 3 237000 v-3
+  # out=11552 in=36 cache_read=2279033 cache_create=15657 cost=$2.40 turns=18 api=376s
+  mkresult 11552 36 2279033 15657 2.40 18 376000 v-4
+} > "$T/four.jsonl"
+mkresult 100 10 1000 100 0.05 2 5000 w-1 > "$T/one.jsonl"
+
+# The stub: ignores its args, replays one fixture as the real CLI's stream-json.
+mkdir -p "$T/bin"
+cat > "$T/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+cat "$FIXTURE"
+EOF
+chmod +x "$T/bin/claude"
+
+# One cell per replay: a git repo with nothing to commit, so the executor parses the
+# stream and exits at "no changes" with usage.json already written.
+replay() {
+  local name="$1" fixture="$2"
+  rm -rf "$T/cell-$name" && mkdir -p "$T/cell-$name" && (cd "$T/cell-$name" && git init -q -b main . && echo hi > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+  (cd "$T/cell-$name" && FIXTURE="$fixture" PATH="$T/bin:$PATH" OSTOYAE_ATTEMPT="a-$name" OSTOYAE_WORK="w-$name" \
+    bash "$OST/executors/claude.sh" <<< '{"id":"a-x","of":"w-x","what":"do x","kind":"prove"}' > "$T/$name.log" 2>&1)
+}
+U() { python3 -c "import json;print(json.load(open('$1'))['$2'])"; }
+
+replay two "$T/two.jsonl"
+assert "1. two result events: output tokens summed, not last-segment (31472, not 86)" "
+import json;u=json.load(open('$T/cell-two/.ostoyae/usage.json'))
+assert u['output_tokens']==31472, u"
+assert "1. input, caches and turns summed; cost and api take the max" "
+import json;u=json.load(open('$T/cell-two/.ostoyae/usage.json'))
+assert (u['input_tokens'],u['cache_read_input_tokens'],u['cache_creation_input_tokens'])==(108,4271317,108329), u
+assert u['turns']==54 and u['cost_usd']==1.60 and u['api_ms']==414000, u
+assert u['model']=='claude-haiku-4-5-20251001,claude-sonnet-5', u"
+
+replay four "$T/four.jsonl"
+assert "2. four result events merge the same way (29506 out, \$2.40, 79 turns)" "
+import json;u=json.load(open('$T/cell-four/.ostoyae/usage.json'))
+assert u['output_tokens']==29506 and u['cost_usd']==2.40 and u['turns']==79, u
+assert (u['input_tokens'],u['cache_read_input_tokens'],u['cache_creation_input_tokens'])==(154,8216447,111991), u"
+
+{ cat "$T/two.jsonl"; head -1 "$T/two.jsonl"; } > "$T/two-dup.jsonl"
+replay twodup "$T/two-dup.jsonl"
+assert "3. an exact-duplicate event is merged once" "
+import json;u=json.load(open('$T/cell-twodup/.ostoyae/usage.json'))
+assert u['output_tokens']==31472 and u['turns']==54 and u['cost_usd']==1.60, u"
+
+replay one "$T/one.jsonl"
+assert "4. a single result event records exactly what it says" "
+import json;u=json.load(open('$T/cell-one/.ostoyae/usage.json'))
+assert (u['output_tokens'],u['cost_usd'],u['turns'])==(100,0.05,2), u"
+
+assert "5. the spend cap reads the merged total, not the last segment" "
+import json,subprocess
+u=json.load(open('$T/cell-two/.ostoyae/usage.json'))
+g={'attempts':[{'result':{'usage':u}}]}
+out=subprocess.run(['node','--input-type=module','-e',
+ 'import fs from \"node:fs\"; import {spendSoFar} from \"$OST/lib/spend.mjs\"; const g=JSON.parse(fs.readFileSync(0,\"utf8\")); console.log(spendSoFar(g).output_tokens)'],
+ input=json.dumps(g),capture_output=True,text=True).stdout.strip()
+assert out=='31472', out"
+
+echo
+if [ "$fails" = 0 ]; then echo "  rehearsal passed"; else echo "  $fails assertion(s) failed; logs in $T (kept)"; trap - EXIT; exit 1; fi

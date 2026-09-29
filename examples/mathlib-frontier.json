@@ -1,0 +1,745 @@
+{
+  "graph": "mathlib-frontier",
+  "concurrency": 3,
+  "max_attempts": 2,
+  "mapping": {
+    "what": "Map this theorem; do not prove it. Turn it from prose into a graph of tasks.  A task is one step an agent can finish in one run and check by building: state the theorem in Lean with a sorry; find a lemma in Mathlib or state what is missing; prove one lemma; assemble; check the axioms. A task is never a whole theorem or a whole body of theory. If a step needs its own lemmas, break it down too.  Find the tasks that do not depend on each other. That is the point of the graph: tasks with no edge between them run at the same time, so a map that comes back as a chain wastes the engine. Most lemmas of a proof are independent of each other and depend only on the statement. Draw an edge only where one task genuinely cannot start until another is finished, and say why in the edge.  Hand back .ostoyae/report.json with: work, one item per task, a short id and one line saying exactly what to do; edges, from each task to the task that cannot start without it, with a why, so the graph reads start to finish and the last edges point at this theorem; map.settles, one or two sentences saying what a finished result is: the Lean statement, sorry-free, kernel-checked, in which file; map.cost, one of small, medium, large, unknown, small meaning one run should land the whole thing and large meaning bodies of theory are missing; map.notes, anything the agents doing the tasks should know.  Write the report as you go: add each task and edge the moment you know it. Write no Lean and change no file but the report. If you cannot tell what would settle it, say so in map.settles and set cost to unknown.",
+    "max_attempts": 1,
+    "params": {
+      "model": "sonnet"
+    }
+  },
+  "sandbox": {
+    "repo": "/path/to/zeta-lab",
+    "root": "/path/to/ostoyae-worktrees",
+    "base": "main",
+    "port_base": 4100,
+    "link": [
+      "lean/.lake/packages"
+    ]
+  },
+  "work": [
+    {
+      "id": "w-mertens",
+      "label": "Mertens's second theorem",
+      "what": "Prove Mertens's second theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Mertens.lean. mathlib docs/1000.yaml Q1196729 has no decl. If mathlib lacks a prerequisite, name it and stop.",
+      "needs": [],
+      "map": {
+        "by": "a-0006",
+        "at": "2026-08-29T23:07:55.413Z",
+        "settles": "A theorem lean/Frontier/Mertens.lean, e.g. `theorem mertens_second_theorem (N : ℕ) : |(∑ p ∈ Finset.Ioc 0 N with p.Prime, ((p:ℝ))⁻¹) - Real.log (Real.log N)| ≤ 16`, sorry-free and kernel-checked (axiom audit reports exactly [propext, Classical.choice, Quot.sound], no sorryAx), built via a new `Frontier` lean_lib in lean/lakefile.toml that imports and reuses the already-complete proof at ZetaLean.Mertens.mertens_second_theorem (lean/ZetaLean/MertensSecond.lean).",
+        "cost": "small",
+        "notes": "The mathematics is already done in this repo, just not at the path w-mertens names. lean/ZetaLean/MertensSecond.lean (building on lean/ZetaLean/Mertensstheorems.lean, Mertens's first theorem) already contains `ZetaLean.Mertens.mertens_second_theorem : ∀ N, |∑_{p≤N} 1/p - log log N| ≤ 16`, an explicit-constant elementary proof from Mathlib.NumberTheory.Chebyshev and Mathlib.Analysis.Complex.ExponentialBounds, with no `sorry` anywhere in either file (checked by grep). A prior hunt (hunts/r_4218d4/RESULTS.md and PrintMertensAxioms.lean) already ran `#print axioms` on exactly this theorem and every lemma in its chain and recorded `[propext, Classical.choice, Quot.sound]` for all of them, with a green `lake build`, against the same pinned Mathlib v4.33.0-rc2 this worktree uses. Confirmed independently: lean/.lake/packages/mathlib/docs/1000.yaml's Q1196729 entry ('Mertens's theorems') carries no `decls:` list, matching w-mertens's own claim. The constant 16 is explicit and NOT the classical constant (4); hunt r_4218d4's RESULTS.md documents this as a deliberate, budgeted choice, not a gap, and lists three named ways to tighten it further (not required for sorry-free landing). Structural gap: lean/lakefile.toml currently declares lean_lib targets ZetaLean, Challenge, Solution, DHChallenge, DHSolution only — there is no `Frontier` lean_lib, so a bare file at lean/Frontier/Mertens.lean will not build until one is added (roots = [\"Frontier\"]). I could not re-run `lake build` myself in this worktree to reconfirm the existing proof still compiles here: a bare `lake build ZetaLean.MertensSecond` (with or without a timeout wrapper, with or without output redirected to a file) returned exit code 1 with zero captured stdout/stderr every time, which looks like a sandbox/resource cutoff rather than a Lean error (mathlib itself is prebuilt: 8313 .olean files present under lean/.lake/packages/mathlib/.lake/build). RESULTS.md also records that a full whole-repo `lake build ZetaLean` in that hunt's container OOM-killed two unrelated Pub1 modules under default parallelism (4 lean processes at ~6.5GB each) — worth passing -j1 or a smaller job count, or using `dangerouslyDisableSandbox`, when the doing attempt actually runs the build. Separately, w-hardy-ramanujan (lean/Frontier/HardyRamanujan.lean) already has its own working path to the same fact: lean/ZetaLean/HardyRamanujantheorem.lean imports ZetaLean.Mertensstheorems directly and calls mertens_second_theorem internally (see PrintMertensAxioms.lean lines auditing ZetaLean.HardyRamanujan.sum_sq_dev_le etc.) — it does not need lean/Frontier/Mertens.lean to exist first, so no blocking edge is drawn between the two work items here.",
+        "needs": [],
+        "unlocks": []
+      }
+    },
+    {
+      "id": "w-brun",
+      "label": "Brun's theorem, the reciprocals of twin primes converge",
+      "what": "Prove Brun's theorem (the sum of reciprocals of twin primes converges) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Brun.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-rosser",
+      "label": "Rosser's theorem, the nth prime exceeds n log n",
+      "what": "Prove Rosser's theorem (the nth prime exceeds n log n) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Rosser.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-erdos-kac",
+      "label": "Erdős–Kac theorem",
+      "what": "Prove the Erdos-Kac theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/ErdosKac.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-hardy-ramanujan",
+      "label": "Hardy–Ramanujan, normal order of ω(n) is log log n",
+      "what": "Prove the Hardy-Ramanujan theorem (normal order of omega(n) is log log n) in Lean 4 against mathlib, sorry-free, in lean/Frontier/HardyRamanujan.lean. mathlib docs/1000.yaml Q5656674 has no decl.",
+      "needs": []
+    },
+    {
+      "id": "w-wolstenholme",
+      "label": "Wolstenholme's theorem",
+      "what": "Prove Wolstenholme's theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Wolstenholme.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-vinogradov",
+      "label": "Vinogradov, every large odd integer is a sum of three primes",
+      "what": "Prove Vinogradov's theorem (every sufficiently large odd integer is a sum of three primes) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Vinogradov.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-viviani",
+      "label": "Viviani's theorem",
+      "what": "Prove Viviani's theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Viviani.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-varignon",
+      "label": "Varignon, the midpoints of a quadrilateral form a parallelogram",
+      "what": "Prove Varignon's theorem (the midpoints of any quadrilateral form a parallelogram) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Varignon.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-napoleon",
+      "label": "Napoleon's theorem",
+      "what": "Prove Napoleon's theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Napoleon.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-butterfly",
+      "label": "the butterfly theorem",
+      "what": "Prove the butterfly theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Butterfly.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-pick",
+      "label": "Pick's theorem",
+      "what": "Prove Pick's theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Pick.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-nicomachus",
+      "label": "Nicomachus, sum of the first n cubes is a square (control, should land)",
+      "what": "Prove Nicomachus's theorem (the sum of the first n cubes is the square of the sum of the first n naturals) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Nicomachus.lean. mathlib docs/1000.yaml has no decl for it. This one is expected to land; it is the control.",
+      "needs": []
+    },
+    {
+      "id": "w-sylvester",
+      "label": "Sylvester–Gallai theorem",
+      "what": "Prove the Sylvester-Gallai theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/SylvesterGallai.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-monsky",
+      "label": "Monsky, no odd equal-area triangulation of a square",
+      "what": "Prove Monsky's theorem (a square cannot be cut into an odd number of triangles of equal area) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Monsky.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-goodstein",
+      "label": "Goodstein's theorem",
+      "what": "Prove Goodstein's theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Goodstein.lean. mathlib docs/1000.yaml has no decl for it.",
+      "needs": []
+    },
+    {
+      "id": "w-zeta-zero-free-region",
+      "what": "Classical de la Vallee Poussin zero-free region for the Riemann zeta function (no zeros for sigma > 1 - c/log|t|) in Lean; Mathlib has Nonvanishing on sigma = 1 but no region.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-pnt-mathlib",
+      "what": "Prime number theorem psi(x) ~ x in Lean against Mathlib, e.g. via a Wiener-Ikehara or Newman contour Tauberian theorem; Mathlib v4.33 has neither the theorem nor the Tauberian input.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-pnt-error-term",
+      "what": "PNT with an explicit error term, psi(x) = x + O(x*exp(-c*sqrt(log x))) or any bound giving pi(x) <= x/log x + C*x/(log x)^2 above an explicit threshold; this is the exact input Rosser consumes.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-rosser-finite-range",
+      "what": "Kernel-checkable verification of p_n > n*log n for every n below the threshold an explicit error term leaves, which needs a fast certified evaluation of Nat.nth Nat.Prime / Nat.primeCounting in Lean (decide on Nat.count over ranges of ~10^4 does not scale).",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-mertens-wishlist-row",
+      "what": "Re-run ../contrib-lab/tools/inventory_source.py so the mathlib-wishlist Q1196729 row names Frontier.Mertens.mertens_second_theorem (the asymptotic form) and not just ZetaLean.Mertens.mertens_second_theorem (the |.| <= 16 band).",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-mertens-constant",
+      "what": "Identify Frontier.Mertens.meisselMertens with gamma + sum_p (log (1 - 1/p) + 1/p); the constant is currently defined as the value of the two series the partial-summation argument produces, and nothing ties it to the Euler-Mascheroni form.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-mertens-third",
+      "what": "Mertens's third theorem, prod_{p <= x} (1 - 1/p)^{-1} ~ e^gamma log x. Not proved anywhere in the tree; Q1196729 covers all three of Mertens's theorems.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-lean-worktree-venv",
+      "what": "A fresh mathlib-frontier worktree has no .venv, so an attempt cannot run the repository's pytest suite; either provision one per worktree or state in the contract that the Python gate is the runner's job.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-mertens-port",
+      "what": "Port Frontier.Mertens to mathlib idiom for an actual PR against Q1196729: statement over a real variable x rather than a natural N, Finset.primesBelow or the nat_primes filter mathlib prefers, and drop the dependency on this repository's ZetaLean.Mertens by inlining or upstreaming Mertens's first theorem first.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-omega-truncated",
+      "what": "Define omega_z(n) = card of primes p <= z dividing n and prove the pointwise comparison omega(n) - omega_z(n) <= log N / log z for n <= N, so the Erdos-Kac moments can be computed for a truncated count whose floor errors are o(N).",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-omega-moment-asymptotic",
+      "what": "Evaluate the k-th moment of the truncated prime-factor count: sum_{n<=N} (omega_z(n) - mu)^k = N * mu^(k/2) * (Gaussian k-th moment) + error, from the identity in lean/Frontier/ErdosKac.lean plus the repository's Mertens second theorem, with the diagonal (non-injective tuple) terms bounded uniformly in k.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-gaussian-moments",
+      "what": "Prove the moments of the standard Gaussian in Mathlib's vocabulary: integral of x^k against ProbabilityTheory.gaussianReal 0 1 is (k-1)!! for even k and 0 for odd k. Mathlib has the Gaussian mgf and Gamma(n+1/2) in terms of Nat.doubleFactorial but no moment statement.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-method-of-moments",
+      "what": "Prove the method of moments: if every moment of a sequence of real random variables converges to the Gaussian moments then the sequence converges in distribution to gaussianReal 0 1. Mathlib has Levy continuity and the i.i.d. CLT, so the intended route is moment bounds to characteristic function convergence to Levy; a Lindeberg-Feller theorem for triangular arrays would substitute for it.",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-brun-mathlib-pr",
+      "what": "Package lean/Frontier/Brun.lean as a mathlib PR for the docs/1000.yaml Brun's theorem entry (Q1195280)",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0002"
+      ],
+      "found_at": "2026-08-29T18:05:12.078Z",
+      "decided_at": "2026-08-29T20:48:11.455Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "w-mertens-second-upstream",
+      "what": "Upstream ZetaLean.Mertens.mertens_second_theorem to mathlib; it is Brun.lean's only non-mathlib dependency",
+      "needs": [],
+      "status": "active",
+      "found_by": [
+        "a-0002"
+      ],
+      "found_at": "2026-08-29T18:05:12.078Z",
+      "decided_at": "2026-08-29T20:48:11.455Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "mertens-wire-lib",
+      "what": "Add `[[lean_lib]] name = \"Frontier\" roots = [\"Frontier\"]` to lean/lakefile.toml, then create lean/Frontier/Mertens.lean importing ZetaLean.MertensSecond and stating `theorem mertens_second_theorem (N : ℕ) : |(∑ p ∈ Finset.Ioc 0 N with p.Prime, ((p:ℝ))⁻¹) - Real.log (Real.log N)| ≤ 16 := sorry`. Check by `lake build Frontier.Mertens`: it must succeed with only the expected sorry warning, no errors.",
+      "needs": [],
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    },
+    {
+      "id": "mertens-verify-source",
+      "what": "Re-confirm in this worktree that lean/ZetaLean/Mertensstheorems.lean and lean/ZetaLean/MertensSecond.lean still build green (no sorry, no error) against the pinned Mathlib v4.33.0-rc2, e.g. `cd lean && lake build ZetaLean.MertensSecond`. This exact chain was last verified sorry-free and axiom-clean in hunt r_4218d4, but that was a different session/container and the build has not been reproduced here yet.",
+      "needs": [],
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    },
+    {
+      "id": "mertens-assemble",
+      "what": "In lean/Frontier/Mertens.lean, replace the `sorry` with `ZetaLean.Mertens.mertens_second_theorem N` (or a one-line wrapper if the exact binder/argument shape of the target statement must differ from the source), so `lake build Frontier.Mertens` is green with zero sorry anywhere in the file.",
+      "needs": [],
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    },
+    {
+      "id": "mertens-axiom-check",
+      "what": "Write a small probe file (following the pattern of hunts/r_4218d4/PrintMertensAxioms.lean) that does `#print axioms Frontier.<final-decl-name>` and run it with `lake env lean`; confirm the output is exactly `[propext, Classical.choice, Quot.sound]`, with no `sorryAx`, closing out w-mertens.",
+      "needs": [],
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-0001",
+      "from": "w-zeta-zero-free-region",
+      "to": "w-pnt-error-term",
+      "why": "An explicit error term in PNT comes from an explicit zero-free region; without a region there is no rate, only the asymptotic.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0002",
+      "from": "w-pnt-error-term",
+      "to": "w-rosser",
+      "why": "Rosser's margin over n*log n is only n*(log log n - 1), a factor log log n above the second-order term of pi, so the asymptotic alone cannot sign it; the explicit error term is what makes the inequality decidable for large n.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0003",
+      "from": "w-rosser-finite-range",
+      "to": "w-rosser",
+      "why": "Any explicit error term leaves a finite initial range (for pi(x) <= x/log x + C*x/(log x)^2 the threshold is about n > e^(e^(1+C)), so n > 1620 already at C = 1) that has to be checked by computation inside the kernel.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0003"
+      ],
+      "found_at": "2026-08-29T17:18:41.889Z",
+      "decided_at": "2026-08-29T20:48:07.832Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0004",
+      "from": "w-mertens",
+      "to": "w-mertens-constant",
+      "why": "The constant only exists as a named object once the convergence theorem that defines it is proved.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0005",
+      "from": "w-mertens-constant",
+      "to": "w-mertens-third",
+      "why": "The third theorem's constant is e^gamma; getting gamma out of the second theorem's constant is the same identification, so doing it twice is waste.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0006",
+      "from": "w-mertens",
+      "to": "w-mertens-wishlist-row",
+      "why": "The row records a declaration, so the declaration has to exist before the sweep can find it.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0007",
+      "from": "w-mertens",
+      "to": "w-mertens-port",
+      "why": "The port restates an existing proof in mathlib idiom; there is nothing to restate until the proof lands.",
+      "status": "confirmed",
+      "found_by": [
+        "a-0001"
+      ],
+      "found_at": "2026-08-29T17:21:11.151Z",
+      "decided_at": "2026-08-29T20:48:04.883Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0008",
+      "from": "w-omega-truncated",
+      "to": "w-omega-moment-asymptotic",
+      "why": "the moment asymptotic is only true, and only has o(N) floor error, for the truncated count omega_z; it has to exist and be comparable to omega first",
+      "status": "confirmed",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0009",
+      "from": "w-omega-truncated",
+      "to": "w-erdos-kac",
+      "why": "the untruncated k-th moment identity carries pi(N)^k floor errors, so no route to Erdos-Kac passes through omega itself",
+      "status": "confirmed",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0010",
+      "from": "w-omega-moment-asymptotic",
+      "to": "w-erdos-kac",
+      "why": "the arithmetic input of the moment proof: without the moments there is nothing for the probabilistic half to consume",
+      "status": "confirmed",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0011",
+      "from": "w-gaussian-moments",
+      "to": "w-method-of-moments",
+      "why": "the limit moments have to be named and computed before convergence to them can be stated",
+      "status": "confirmed",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0012",
+      "from": "w-method-of-moments",
+      "to": "w-erdos-kac",
+      "why": "Mathlib has no theorem taking convergence of moments to convergence in distribution, and its only CLT is for i.i.d. sequences, which the prime indicators are not",
+      "status": "confirmed",
+      "found_by": [
+        "a-0004"
+      ],
+      "found_at": "2026-08-29T17:42:19.435Z",
+      "decided_at": "2026-08-29T20:48:09.597Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0013",
+      "from": "w-mertens-second-upstream",
+      "to": "w-brun-mathlib-pr",
+      "why": "Frontier/Brun.lean imports ZetaLean.MertensSecond for the |sum 1/p - log log N| <= 16 bound; a mathlib PR cannot depend on this repository, so Mertens has to land first",
+      "status": "confirmed",
+      "found_by": [
+        "a-0002"
+      ],
+      "found_at": "2026-08-29T18:05:12.078Z",
+      "decided_at": "2026-08-29T20:48:11.455Z",
+      "decided_via": "viewer"
+    },
+    {
+      "id": "e-0014",
+      "from": "mertens-wire-lib",
+      "to": "mertens-assemble",
+      "why": "the Frontier lean_lib entry and the sorry-stubbed statement must exist and build before the sorry inside it can be filled in.",
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    },
+    {
+      "id": "e-0015",
+      "from": "mertens-verify-source",
+      "to": "mertens-assemble",
+      "why": "assembly reuses ZetaLean.Mertens.mertens_second_theorem verbatim; if that source proof no longer builds under the currently pinned Mathlib, assembly has to wait on repairing it first instead of just citing it.",
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    },
+    {
+      "id": "e-0016",
+      "from": "mertens-assemble",
+      "to": "mertens-axiom-check",
+      "why": "the axiom audit needs a compiled, sorry-free final declaration to point `#print axioms` at.",
+      "status": "proposed",
+      "found_by": [
+        "a-0006"
+      ],
+      "found_at": "2026-08-29T23:07:55.413Z"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "a-0001",
+      "of": "w-mertens",
+      "what": "Prove Mertens's second theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Mertens.lean. mathlib docs/1000.yaml Q1196729 has no decl. If mathlib lacks a prerequisite, name it and stop.",
+      "from": null,
+      "state": "walled",
+      "params": {
+        "attempt": 1
+      },
+      "sandbox": {
+        "worktree": "wt/mathlib-frontier/a-0001",
+        "branch": "ost/mathlib-frontier/a-0001",
+        "db": "ost_mathlib_frontier_0001",
+        "port": 4101
+      },
+      "started": "t+0",
+      "ended": "t+2",
+      "result": {
+        "why": "exit 1",
+        "wall": "Nothing blocked the Lean work: lean/Frontier/Mertens.lean builds sorry-free on the pinned v4.33.0-rc2 toolchain and #print axioms reports exactly [propext, Classical.choice, Quot.sound]. Two things I could not run from inside this worktree, neither of which gates the proof: (1) there is no .venv and no pytest here, so the repository's Python suite was never executed against my change (I hand-checked the only rules that could touch it: no `sorry`/`admit`/`axiom`/`native_decide` in the new source, no machine-local absolute path); (2) mathlib-wishlist/README.md says its table must be regenerated by ../contrib-lab/tools/inventory_source.py rather than hand-edited, and that repository is outside the worktree, so the Q1196729 row still names only the weaker banded statement.",
+        "found": [
+          "w-mertens-wishlist-row",
+          "w-mertens-constant",
+          "w-mertens-third",
+          "w-lean-worktree-venv",
+          "w-mertens-port",
+          "e-0004",
+          "e-0005",
+          "e-0006",
+          "e-0007"
+        ]
+      }
+    },
+    {
+      "id": "a-0002",
+      "of": "w-brun",
+      "what": "Prove Brun's theorem (the sum of reciprocals of twin primes converges) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Brun.lean. mathlib docs/1000.yaml has no decl for it.",
+      "from": null,
+      "state": "done",
+      "params": {
+        "attempt": 1
+      },
+      "sandbox": {
+        "worktree": "wt/mathlib-frontier/a-0002",
+        "branch": "ost/mathlib-frontier/a-0002",
+        "db": "ost_mathlib_frontier_0002",
+        "port": 4102
+      },
+      "started": "t+0",
+      "ended": "t+5",
+      "result": {
+        "why": "exit 0",
+        "found": [
+          "w-brun-mathlib-pr",
+          "w-mertens-second-upstream",
+          "e-0013"
+        ]
+      }
+    },
+    {
+      "id": "a-0003",
+      "of": "w-rosser",
+      "what": "Prove Rosser's theorem (the nth prime exceeds n log n) in Lean 4 against mathlib, sorry-free, in lean/Frontier/Rosser.lean. mathlib docs/1000.yaml has no decl for it.",
+      "from": null,
+      "state": "walled",
+      "params": {
+        "attempt": 1
+      },
+      "sandbox": {
+        "worktree": "wt/mathlib-frontier/a-0003",
+        "branch": "ost/mathlib-frontier/a-0003",
+        "db": "ost_mathlib_frontier_0003",
+        "port": 4103
+      },
+      "started": "t+0",
+      "ended": "t+1",
+      "result": {
+        "why": "exit 1",
+        "wall": "Rosser's theorem (p_n > n log n) cannot be closed against Mathlib v4.33 because Mathlib has no prime number theorem, and no weaker prime-counting bound can substitute. The reduction is exact: p_n > n log n for all n >= 1 is equivalent to pi(x) * log(pi(x)) < x for all x >= 2 (proved unconditionally in lean/Frontier/Rosser.lean as `rosserStatement_iff`). Feed that any bound of shape pi(x) <= C * x / log x and it yields pi(x) * log(pi(x)) <= C*x*(1 - (log log x - log C)/log x), so the theorem needs log log x > (log x)*(C-1)/C + log C. For any fixed C > 1 the right side grows linearly in log x and the left like log log x, so it fails for all large x no matter how large a finite range is checked by hand. C must therefore be exactly 1, which is the PNT; and since the true margin is only x*(log log x - 1)/log x, a factor log log x above the second-order term of pi, what is actually consumed is PNT WITH an error term of size o(x * log log x / (log x)^2), i.e. psi(x) = x + o(x/log x). Mathlib's strongest unconditional prime-counting facts are Chebyshev's, leading constant Real.log 4 = 1.3862 (`Chebyshev.pi_le_log4_mul_div`, `Chebyshev.eventually_primeCounting_le`), and no elementary sharpening closes the gap either: the best elementary constants in the literature (Rosser-Schoenfeld psi(x) < 1.03883x, Costa Pereira 1.0353) are also > 1 and die to the same display. Mathlib has no Wiener-Ikehara / Newman Tauberian theorem and no zeta zero-free region, so there is nothing in tree to build the C = 1 bound from. What did land, sorry-free and kernel-checked (axioms exactly [propext, Classical.choice, Quot.sound]): lean/Frontier/Rosser.lean with the statement `RosserStatement`, the exact reduction `rosserStatement_iff`, and Rosser up to a constant - `mul_log_le_const_mul_nth_prime`: n*log n <= (2*log 4 + 1)*p_n unconditionally, `mul_log_lt_four_mul_nth_prime`: n*log n < 4*p_n, and `eventually_mul_log_lt_nth_prime`: for every eps > 0, eventually n*log n <= (log 4 + eps)*p_n, which is the best constant reachable from Mathlib today. The distance left to travel is exactly log 4 -> 1.",
+        "found": [
+          "w-zeta-zero-free-region",
+          "w-pnt-mathlib",
+          "w-pnt-error-term",
+          "w-rosser-finite-range",
+          "e-0001",
+          "e-0002",
+          "e-0003"
+        ]
+      }
+    },
+    {
+      "id": "a-0004",
+      "of": "w-erdos-kac",
+      "what": "Prove the Erdos-Kac theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/ErdosKac.lean. mathlib docs/1000.yaml has no decl for it.",
+      "from": null,
+      "state": "walled",
+      "params": {
+        "attempt": 1
+      },
+      "sandbox": {
+        "worktree": "wt/mathlib-frontier/a-0004",
+        "branch": "ost/mathlib-frontier/a-0004",
+        "db": "ost_mathlib_frontier_0004",
+        "port": 4104
+      },
+      "started": "t+1",
+      "ended": "t+4",
+      "result": {
+        "why": "exit 1",
+        "wall": "Erdos-Kac is not one missing lemma, it is two missing bodies of theory, and I could close neither in this cell. (1) Probabilistic side: Mathlib v4.33.0-rc2 has the i.i.d. central limit theorem (ProbabilityTheory.tendstoInDistribution_inv_sqrt_mul_sum_sub) and the Levy continuity theorem, but no Lindeberg-Feller theorem for triangular arrays of independent non-identically-distributed variables, no method of moments (convergence of all moments to the Gaussian ones implies convergence in distribution), and not even the Gaussian moments themselves: a grep of Mathlib/Probability and Mathlib/Analysis/SpecialFunctions/Gaussian finds no statement of int x^(2m) dgaussianReal 0 1 = (2m-1)!!. Without one of those two the arithmetic moments cannot be turned into a distributional limit at all. (2) Arithmetic side: the exact k-th moment identity I did prove here (sum_omega_pow_eq: sum_{n<=N} omega(n)^k = sum over k-tuples s of primes <= N of floor(N / prod(range s))) is unusable as it stands, because replacing each floor(N/d) by N/d costs O(1) per tuple and there are pi(N)^k tuples, which swamps N. The standard fix is to truncate: work with omega_z(n) = #{p <= z : p | n} for z = N^(1/s), where omega(n) - omega_z(n) <= s pointwise, so the error becomes O(z^k) = o(N). There is no truncated omega in this tree and no comparison lemma for it, and past that point the moment evaluation needs Mertens' second theorem raised to the k-th power with the diagonal terms controlled uniformly in k. Each of those is a piece of work in its own right, not a step. What I did close is the combinatorial entry point, sorry-free and kernel-checked: the statement, the exact k-th moment identity in three forms (tuple, grouped by the set of primes with surjection weights, and split into injective and diagonal tuples). The k=1 case is rederived from the general identity as a check that the statement is the right one.",
+        "found": [
+          "w-omega-truncated",
+          "w-omega-moment-asymptotic",
+          "w-gaussian-moments",
+          "w-method-of-moments",
+          "e-0008",
+          "e-0009",
+          "e-0010",
+          "e-0011",
+          "e-0012"
+        ]
+      }
+    },
+    {
+      "id": "a-0005",
+      "of": "w-hardy-ramanujan",
+      "what": "Prove the Hardy-Ramanujan theorem (normal order of omega(n) is log log n) in Lean 4 against mathlib, sorry-free, in lean/Frontier/HardyRamanujan.lean. mathlib docs/1000.yaml Q5656674 has no decl.",
+      "from": null,
+      "state": "failed",
+      "params": {
+        "attempt": 1
+      },
+      "sandbox": {
+        "worktree": "wt/mathlib-frontier/a-0005",
+        "branch": "ost/mathlib-frontier/a-0005",
+        "db": "ost_mathlib_frontier_0005",
+        "port": 4105
+      },
+      "started": "t+2",
+      "ended": "t+3",
+      "result": {
+        "why": "exit 1",
+        "output": [
+          "Permission allow rule (../../../Zeta/.claude/settings.local.json): Write(/~/Zeta/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/~/Zeta/**) instead (Edit rules cover all file-editing tools).",
+          "Permission allow rule (../../../Zeta/.claude/settings.local.json): Write(/~/zeta-reviews-private/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(/~/zeta-reviews-private/**) instead (Edit rules cover all file-editing tools).",
+          "Permission allow rule (../../../Zeta/.claude/settings.local.json): Write(//tmp/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(//tmp/**) instead (Edit rules cover all file-editing tools).",
+          "Permission allow rule (../../../Zeta/.claude/settings.local.json): Write(//private/tmp/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(//private/tmp/**) instead (Edit rules cover all file-editing tools).",
+          "~/Ostoyae/executors/claude.sh: line 22: 63484 Killed: 9               claude \"${ARGS[@]}\" --disallowedTools \"Bash(git:*)\"",
+          "[cell a-0005] agent exited non-zero"
+        ]
+      }
+    },
+    {
+      "id": "a-0006",
+      "of": "w-mertens",
+      "kind": "map",
+      "what": "Map this theorem; do not prove it. Turn it from prose into a graph of tasks.  A task is one step an agent can finish in one run and check by building: state the theorem in Lean with a sorry; find a lemma in Mathlib or state what is missing; prove one lemma; assemble; check the axioms. A task is never a whole theorem or a whole body of theory. If a step needs its own lemmas, break it down too.  Find the tasks that do not depend on each other. That is the point of the graph: tasks with no edge between them run at the same time, so a map that comes back as a chain wastes the engine. Most lemmas of a proof are independent of each other and depend only on the statement. Draw an edge only where one task genuinely cannot start until another is finished, and say why in the edge.  Hand back .ostoyae/report.json with: work, one item per task, a short id and one line saying exactly what to do; edges, from each task to the task that cannot start without it, with a why, so the graph reads start to finish and the last edges point at this theorem; map.settles, one or two sentences saying what a finished result is: the Lean statement, sorry-free, kernel-checked, in which file; map.cost, one of small, medium, large, unknown, small meaning one run should land the whole thing and large meaning bodies of theory are missing; map.notes, anything the agents doing the tasks should know.  Write the report as you go: add each task and edge the moment you know it. Write no Lean and change no file but the report. If you cannot tell what would settle it, say so in map.settles and set cost to unknown.\n\nThe work item you are mapping is w-mertens: Prove Mertens's second theorem in Lean 4 against mathlib, sorry-free, in lean/Frontier/Mertens.lean. mathlib docs/1000.yaml Q1196729 has no decl. If mathlib lacks a prerequisite, name it and stop.",
+      "from": null,
+      "state": "done",
+      "params": {
+        "model": "sonnet",
+        "attempt": 1
+      },
+      "sandbox": {
+        "worktree": "wt/mathlib-frontier/a-0006",
+        "branch": "ost/mathlib-frontier/a-0006",
+        "db": "ost_mathlib_frontier_0006",
+        "port": 4106
+      },
+      "started": "t+0",
+      "ended": "t+1",
+      "started_at": "2026-08-29T23:02:20.918Z",
+      "ended_at": "2026-08-29T23:07:55.413Z",
+      "result": {
+        "why": "exit 0",
+        "found": [
+          "mertens-wire-lib",
+          "mertens-verify-source",
+          "mertens-assemble",
+          "mertens-axiom-check",
+          "e-0014",
+          "e-0015",
+          "e-0016"
+        ],
+        "map": {
+          "settles": "A theorem lean/Frontier/Mertens.lean, e.g. `theorem mertens_second_theorem (N : ℕ) : |(∑ p ∈ Finset.Ioc 0 N with p.Prime, ((p:ℝ))⁻¹) - Real.log (Real.log N)| ≤ 16`, sorry-free and kernel-checked (axiom audit reports exactly [propext, Classical.choice, Quot.sound], no sorryAx), built via a new `Frontier` lean_lib in lean/lakefile.toml that imports and reuses the already-complete proof at ZetaLean.Mertens.mertens_second_theorem (lean/ZetaLean/MertensSecond.lean).",
+          "cost": "small",
+          "notes": "The mathematics is already done in this repo, just not at the path w-mertens names. lean/ZetaLean/MertensSecond.lean (building on lean/ZetaLean/Mertensstheorems.lean, Mertens's first theorem) already contains `ZetaLean.Mertens.mertens_second_theorem : ∀ N, |∑_{p≤N} 1/p - log log N| ≤ 16`, an explicit-constant elementary proof from Mathlib.NumberTheory.Chebyshev and Mathlib.Analysis.Complex.ExponentialBounds, with no `sorry` anywhere in either file (checked by grep). A prior hunt (hunts/r_4218d4/RESULTS.md and PrintMertensAxioms.lean) already ran `#print axioms` on exactly this theorem and every lemma in its chain and recorded `[propext, Classical.choice, Quot.sound]` for all of them, with a green `lake build`, against the same pinned Mathlib v4.33.0-rc2 this worktree uses. Confirmed independently: lean/.lake/packages/mathlib/docs/1000.yaml's Q1196729 entry ('Mertens's theorems') carries no `decls:` list, matching w-mertens's own claim. The constant 16 is explicit and NOT the classical constant (4); hunt r_4218d4's RESULTS.md documents this as a deliberate, budgeted choice, not a gap, and lists three named ways to tighten it further (not required for sorry-free landing). Structural gap: lean/lakefile.toml currently declares lean_lib targets ZetaLean, Challenge, Solution, DHChallenge, DHSolution only — there is no `Frontier` lean_lib, so a bare file at lean/Frontier/Mertens.lean will not build until one is added (roots = [\"Frontier\"]). I could not re-run `lake build` myself in this worktree to reconfirm the existing proof still compiles here: a bare `lake build ZetaLean.MertensSecond` (with or without a timeout wrapper, with or without output redirected to a file) returned exit code 1 with zero captured stdout/stderr every time, which looks like a sandbox/resource cutoff rather than a Lean error (mathlib itself is prebuilt: 8313 .olean files present under lean/.lake/packages/mathlib/.lake/build). RESULTS.md also records that a full whole-repo `lake build ZetaLean` in that hunt's container OOM-killed two unrelated Pub1 modules under default parallelism (4 lean processes at ~6.5GB each) — worth passing -j1 or a smaller job count, or using `dangerouslyDisableSandbox`, when the doing attempt actually runs the build. Separately, w-hardy-ramanujan (lean/Frontier/HardyRamanujan.lean) already has its own working path to the same fact: lean/ZetaLean/HardyRamanujantheorem.lean imports ZetaLean.Mertensstheorems directly and calls mertens_second_theorem internally (see PrintMertensAxioms.lean lines auditing ZetaLean.HardyRamanujan.sum_sq_dev_le etc.) — it does not need lean/Frontier/Mertens.lean to exist first, so no blocking edge is drawn between the two work items here."
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "graph": "fix-booking-race",
+  "concurrency": 3,
+  "max_attempts": 3,
+  "defaults": {
+    "agent": "claude",
+    "model": "opus",
+    "budget": "30m"
+  },
+  "work": [
+    {
+      "id": "w-investigate",
+      "what": "find why the booking confirmation fires twice",
+      "needs": []
+    },
+    {
+      "id": "w-schema",
+      "what": "add an idempotency key column to bookings",
+      "needs": [
+        "w-investigate"
+      ]
+    },
+    {
+      "id": "w-confirm",
+      "what": "guard the confirm path with the idempotency key",
+      "needs": [
+        "w-schema"
+      ]
+    },
+    {
+      "id": "w-webhook",
+      "what": "make the payment webhook handler idempotent",
+      "needs": [
+        "w-schema"
+      ]
+    },
+    {
+      "id": "w-docs",
+      "what": "write up the failure mode in the runbook",
+      "needs": [],
+      "params": {
+        "model": "haiku",
+        "budget": "10m"
+      }
+    }
+  ],
+  "edges": [],
+  "attempts": []
+}

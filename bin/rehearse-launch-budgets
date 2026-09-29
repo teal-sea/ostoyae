@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# Non-dollar budgets in the browser launch path, rehearsed with the fake executor: zero model calls.
+#
+#   bin/rehearse-launch-budgets   prints one line per assertion, exits non-zero if any fails
+#
+# The browser launch box used to speak dollars only: POST /api/launch with anything but a
+# positive dollar cap answered 400, so an invocation- or token-budgeted run could not be started
+# from the page. The endpoint now accepts invocation and output-token budgets alongside the
+# dollar cap and carries each to the runner's own flag. This rehearses the whole path, launch
+# box to settled record, and pins the dollar path byte-identical: same 200s, same 400s, same
+# --reserve-usd.
+#
+# Unified from w-repro's 106-line regression and w-fix's expanded suite (same-file add/add):
+# keeps the literal '1. token-budget launch is accepted', the dollar-path pins, and the
+# binding-semantics assertions, plus w-repro's snake_case POST shape as 1c/1d.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-launch-budgets.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; python3 -c "$2" 2>&1 | tail -3 | sed 's/^/        /'; fi; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+export OSTOYAE_EXEC="bash $OST/executors/fake.sh"
+
+# Five boards, one per launch: budgets are cumulative over the record, so a launch needs a
+# fresh board to say what stopped it. A and D price each attempt at $1 (1000 output tokens
+# from the fake executor); B is unpriced, the way a token-only executor reports. E carries
+# w-repro's snake_case POST shape with generous budgets.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+def board(name, fake, n=4):
+    work = [{"id": f"w-{k}", "what": f"item {k}", "check": "true",
+             "params": {"fake": fake}} for k in range(1, n + 1)]
+    return {"graph": name, "concurrency": 1, "max_attempts": 1,
+            "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-{name}",
+                        "base": "main", "port_base": 4980},
+            "work": work, "edges": [], "attempts": []}
+json.dump(board("token", {"usd": 1}), open(f"{T}/token.json", "w"), indent=2)
+json.dump(board("invocations", {}), open(f"{T}/invocations.json", "w"), indent=2)
+json.dump(board("dollars", {"usd": 1}, n=2), open(f"{T}/dollars.json", "w"), indent=2)
+json.dump(board("combined", {"usd": 1}), open(f"{T}/combined.json", "w"), indent=2)
+json.dump(board("aliases", {"usd": 1}, n=1), open(f"{T}/aliases.json", "w"), indent=2)
+PY
+
+# In a cell the runner assigns PORT; use it alone so parallel attempts never collide.
+# Locally (no PORT) fall back to the fixed range.
+if [ -n "${PORT:-}" ]; then PORTS="$PORT"; else PORTS="4761 4762 4763 4764 4765"; fi
+SRV=""
+for PORT in $PORTS; do
+  node "$OST/viewer/serve.mjs" "$T/token.json" "$T/invocations.json" "$T/dollars.json" "$T/combined.json" "$T/aliases.json" \
+    --port "$PORT" --control > "$T/serve.log" 2>&1 &
+  SRV=$!
+  for _ in $(seq 1 15); do
+    curl -sf --noproxy '*' "127.0.0.1:$PORT/api/graph" > /dev/null 2>&1 && break 2
+    sleep 1
+  done
+  kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=""
+done
+if [ -z "$SRV" ]; then
+  fail "0. the viewer server answers"; tail -5 "$T/serve.log" | sed 's/^/        /'
+  echo ""; echo "  $fails assertion(s) failed"
+  exit 1
+fi
+trap 'kill $SRV 2>/dev/null; [ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+
+echo "== the server answers through a symlinked path"
+ln -s "$OST" "$T/linkroot"
+node "$T/linkroot/viewer/serve.mjs" "$T/token.json" --port 0 > "$T/link.log" 2>&1 &
+LINK=$!
+LINKPORT=""
+for _ in $(seq 1 15); do
+  LINKPORT=$(grep -o 'http://localhost:[0-9]*' "$T/link.log" 2>/dev/null | tail -1 | grep -o '[0-9]*')
+  [ -n "$LINKPORT" ] && curl -sf --noproxy '*' "127.0.0.1:$LINKPORT/api/graph" > /dev/null 2>&1 && break
+  LINKPORT=""; sleep 1
+done
+if [ -n "$LINKPORT" ]; then
+  pass "0b. the server answers when invoked through a symlink"
+else
+  fail "0b. the server answers when invoked through a symlink"; tail -3 "$T/link.log" 2>/dev/null | sed 's/^/        /'
+fi
+kill "$LINK" 2>/dev/null; wait "$LINK" 2>/dev/null
+
+post() { # post <board> <json> <outbody> -> prints HTTP code
+  curl -s --noproxy '*' -o "$3" -w '%{http_code}' -X POST "127.0.0.1:$PORT/api/launch?board=$1" \
+    -H 'content-type: application/json' -d "$2"
+}
+wait_settled() { # wait_settled <board> — until last_run lands or 150s pass
+  for _ in $(seq 1 150); do
+    python3 -c "
+import json;g=json.load(open('$1'))
+assert g.get('last_run'), 'running'" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+echo "== a token budget launches and binds"
+code=$(post "$T/token.json" '{"outputTokens": 1500}' "$T/tok.resp")
+if [ "$code" = 200 ] && python3 -c "
+import json;o=json.load(open('$T/tok.resp'))
+assert o.get('pid') and o.get('outputTokens') == 1500, o" >/dev/null 2>&1 \
+   && wait_settled "$T/token.json"; then
+  pass "1. token-budget launch is accepted"
+else
+  fail "1. token-budget launch is accepted"; echo "        http $code $(cat "$T/tok.resp" 2>/dev/null | head -c 200)"
+fi
+assert "1b. the token budget stopped the run at one attempt" "
+import json;g=json.load(open('$T/token.json'))
+assert len(g['attempts']) == 1, len(g['attempts'])
+assert 'output-token budget' in g['last_run']['stopped_by'], g['last_run']['stopped_by']
+assert g['last_run']['budgets']['output_tokens'] == 1500, g['last_run']['budgets']"
+
+echo "== w-repro's snake_case shape launches too"
+code=$(post "$T/aliases.json" '{"max_output_tokens":50000,"max_invocations":10}' "$T/alias.resp")
+if [ "$code" = 200 ] && python3 -c "
+import json;o=json.load(open('$T/alias.resp'))
+assert o.get('pid') and o.get('outputTokens') == 50000 and o.get('invocations') == 10, o" >/dev/null 2>&1 \
+   && wait_settled "$T/aliases.json"; then
+  pass "1c. snake_case budget aliases are accepted"
+else
+  fail "1c. snake_case budget aliases are accepted"; echo "        http $code $(cat "$T/alias.resp" 2>/dev/null | head -c 200)"
+fi
+assert "1d. the aliases reached the runner's flags" "
+import json;g=json.load(open('$T/aliases.json'))
+assert len(g['attempts']) == 1, len(g['attempts'])
+assert g['last_run']['budgets']['output_tokens'] == 50000, g['last_run']['budgets']
+assert g['last_run']['budgets']['invocations'] == 10, g['last_run']['budgets']"
+
+echo "== an invocation budget launches and binds, with no dollar cap"
+code=$(post "$T/invocations.json" '{"invocations": 2}' "$T/inv.resp")
+if [ "$code" = 200 ] && python3 -c "
+import json;o=json.load(open('$T/inv.resp'))
+assert o.get('pid') and o.get('invocations') == 2 and o.get('cap') is None, o" >/dev/null 2>&1 \
+   && wait_settled "$T/invocations.json"; then
+  pass "2. invocation-budget launch is accepted"
+else
+  fail "2. invocation-budget launch is accepted"; echo "        http $code $(cat "$T/inv.resp" 2>/dev/null | head -c 200)"
+fi
+assert "2b. the invocation budget stopped the run at two" "
+import json;g=json.load(open('$T/invocations.json'))
+assert len(g['attempts']) == 2, len(g['attempts'])
+assert 'invocation allowance of 2' in g['last_run']['stopped_by'], g['last_run']['stopped_by']
+assert g['last_run']['budgets']['invocations'] == 2, g['last_run']['budgets']
+assert g['last_run']['budgets']['usd'] is None, g['last_run']['budgets']"
+
+echo "== the dollar path still works"
+code=$(post "$T/dollars.json" '{}' "$T/empty.resp")
+assert "3. an empty launch is still refused with the dollar message" "
+import json;o=json.load(open('$T/empty.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'a launch needs a positive dollar cap', o"
+code=$(post "$T/dollars.json" '{"cap": "abc"}' "$T/badcap.resp")
+assert "3b. a bad dollar cap is refused with the dollar message" "
+import json;o=json.load(open('$T/badcap.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'a launch needs a positive dollar cap', o"
+code=$(post "$T/dollars.json" '{"cap": 5, "reserve": "x"}' "$T/badreserve.resp")
+assert "3c. a bad reserve is refused with the reserve message" "
+import json;o=json.load(open('$T/badreserve.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'reserve must be a nonnegative dollar amount', o"
+assert "3d. refused launches start nothing" "
+import json;g=json.load(open('$T/dollars.json'))
+assert g['attempts'] == [], len(g['attempts'])"
+code=$(post "$T/dollars.json" '{"cap": true}' "$T/boolcap.resp")
+assert "3e. a boolean dollar cap is refused with the dollar message" "
+import json;o=json.load(open('$T/boolcap.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'a launch needs a positive dollar cap', o"
+code=$(post "$T/dollars.json" '{"cap": [5]}' "$T/arrcap.resp")
+assert "3f. an array dollar cap is refused with the dollar message" "
+import json;o=json.load(open('$T/arrcap.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'a launch needs a positive dollar cap', o"
+code=$(post "$T/dollars.json" '{"cap": 5, "reserve": true}' "$T/boolreserve.resp")
+assert "3g. a boolean reserve is refused with the reserve message" "
+import json;o=json.load(open('$T/boolreserve.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'reserve must be a nonnegative dollar amount', o"
+code=$(post "$T/dollars.json" '{"cap": 5, "reserve": [3]}' "$T/arrreserve.resp")
+assert "3h. an array reserve is refused with the reserve message" "
+import json;o=json.load(open('$T/arrreserve.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'reserve must be a nonnegative dollar amount', o"
+code=$(post "$T/dollars.json" '{"cap": 50, "reserve": 3}' "$T/ok.resp")
+if [ "$code" = 200 ] && python3 -c "
+import json;o=json.load(open('$T/ok.resp'))
+assert o.get('pid') and o.get('cap') == 50, o" >/dev/null 2>&1 \
+   && wait_settled "$T/dollars.json"; then
+  pass "4. a positive dollar cap launches"
+else
+  fail "4. a positive dollar cap launches"; echo "        http $code $(cat "$T/ok.resp" 2>/dev/null | head -c 200)"
+fi
+assert "4b. dollars and reserve reached the runner" "
+import json;g=json.load(open('$T/dollars.json'))
+assert len(g['attempts']) == 2, len(g['attempts'])
+assert g['last_run']['budgets']['usd'] == 50, g['last_run']['budgets']
+assert g['last_run']['budgets']['reserve_usd'] == 3, g['last_run']['budgets']"
+
+echo "== budgets compose, and bad counts are refused"
+code=$(post "$T/combined.json" '{"invocations": 0}' "$T/zero.resp")
+assert "5. a zero invocation budget is refused" "
+import json;o=json.load(open('$T/zero.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'invocations must be a positive integer', o"
+code=$(post "$T/combined.json" '{"outputTokens": "many"}' "$T/many.resp")
+assert "5b. a non-numeric token budget is refused" "
+import json;o=json.load(open('$T/many.resp'))
+assert '$code' == '400', '$code'
+assert o['error'] == 'output tokens must be a positive integer', o"
+code=$(post "$T/combined.json" '{"cap": 50, "invocations": 1}' "$T/comb.resp")
+if [ "$code" = 200 ] && wait_settled "$T/combined.json"; then
+  pass "6. dollars plus invocations launch together"
+else
+  fail "6. dollars plus invocations launch together"; echo "        http $code $(cat "$T/comb.resp" 2>/dev/null | head -c 200)"
+fi
+assert "6b. the first budget to bind stopped the run" "
+import json;g=json.load(open('$T/combined.json'))
+assert len(g['attempts']) == 1, len(g['attempts'])
+assert 'invocation allowance' in g['last_run']['stopped_by'], g['last_run']['stopped_by']
+assert g['last_run']['budgets']['usd'] == 50, g['last_run']['budgets']
+assert g['last_run']['budgets']['invocations'] == 1, g['last_run']['budgets']"
+
+echo "== cost reporting stays honest"
+curl -s --noproxy '*' "127.0.0.1:$PORT/api/graph?board=$T/invocations.json" > "$T/graph.json" 2>/dev/null
+assert "7. unpriced attempts report no cost, counted not zeroed" "
+import json
+g=json.load(open('$T/invocations.json'))
+costs=[a for a in g['attempts'] if (a.get('result') or {}).get('usage', {}).get('cost_usd') is not None]
+assert not costs, costs
+s=json.load(open('$T/graph.json'))['spent']
+assert s['unpriced'] == 2 and s['priced'] == 0, s"
+
+echo "== the launch box offers all three budgets"
+if python3 - "$OST/viewer/index.html" > "$T/a8.log" 2>&1 <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+
+def wiring_ok(text):
+    """The launch box is wired: both count inputs exist, the go button owns a
+    handler, and that handler reads the inputs before POSTing the launch."""
+    required = ['id="invcap"', 'id="tokcap"',
+                'invocations: invocations || undefined',
+                'outputTokens: outputTokens || undefined',
+                'launchBudgetsValid']
+    if any(m not in text for m in required):
+        return False
+    order = ["document.getElementById('go').onclick",
+             "getElementById('invcap').value",
+             "getElementById('tokcap').value",
+             "api('/api/launch')"]
+    pos = -1
+    for m in order:
+        pos = text.find(m, pos + 1)
+        if pos < 0:
+            return False
+    return True
+
+assert wiring_ok(src), 'the real page is not wired'
+# The mutation probe: the same checks must FAIL on a copy whose launch POST is
+# retargeted and whose button handler is detached, or this assertion is vacuous.
+broken = src.replace("api('/api/launch')", "api('/api/launcher-is-broken')")
+old = "document.getElementById('go').onclick = async () => {"
+assert old in src, 'harness: go onclick shape changed; update the mutation'
+broken = broken.replace(old, 'void 0; // BROKEN: launch wiring removed', 1)
+assert not wiring_ok(broken), 'vacuous: the checks pass on a box that cannot launch'
+print('real page wired; retargeted/detached copy refused')
+PY
+then
+  pass "8. renderLaunch carries invocations and output tokens"
+else
+  fail "8. renderLaunch carries invocations and output tokens"; tail -3 "$T/a8.log" 2>/dev/null | sed 's/^/        /'
+fi
+
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+
+echo ""
+if [ "$fails" = 0 ]; then echo "  rehearsal passed"; else echo "  $fails assertion(s) failed; logs in $T (kept)"; trap - EXIT; exit 1; fi

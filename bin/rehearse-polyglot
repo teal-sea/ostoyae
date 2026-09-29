@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# The three non-Lean example boards, rehearsed with the fake executor: zero model calls, no
+# network, three throwaway pursuits, and the toolchains' own exit codes.
+#
+#   bin/rehearse-polyglot         prints one line per assertion, exits non-zero if any fails
+#
+# Why this exists. Every board in examples/ was Lean or prose, so nothing checked that a graph
+# can declare a toolchain the engine has never been pointed at. The engine needs no change for
+# it — a `check` is a shell command and `sandbox.tools` is a list — and this is what says so out
+# loud: cargo, pytest and tsc each run as the judge on an attempt's branch, and each one's
+# failure lands on the record in its own words.
+#
+#   1-3. each board declares its tools, a real check per work item, the environment the cell
+#        would otherwise lose, and the command a human runs
+#     4. no board declares a tool doctor cannot resolve: not a bare interpreter, not a path
+#        relative to whatever cwd doctor happens to run in
+#     5. rust: doctor is ready to launch and every declared cargo command resolved
+#     6. rust: two attempts done, `cargo test` and `cargo clippy` ran on the branch
+#     7. rust: a broken test in the crate fails the same run, with cargo's own words recorded
+#     8. python: `pytest` resolves, and so does the same board written `python3 -m pytest`
+#     9. python: two attempts done, pytest ran on the branch
+#    10. python: the same board with env_passthrough emptied cannot import the package
+#    11. typescript: doctor is ready to launch
+#    12. typescript: two attempts done, `npx tsc` and `npm test` ran with node_modules linked
+#
+# The pursuits are built to satisfy the boards' declared checks, so what an assertion proves is
+# that the engine runs that toolchain and gates on it, not that any real repo passes.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+FAKE="bash $OST/executors/fake.sh"
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-polyglot.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+ran=0
+skipped=0
+# `ran` exists because the summary used to print a hardcoded "12 assertions,
+# all passing" and exit 0 even when a missing toolchain skipped eight of them.
+# A rehearsal that reports green for assertions it never executed is worse than
+# no rehearsal, because `for r in bin/rehearse-*` is the guard rail everything
+# else trusts. Skips are counted and named instead.
+pass() { echo "  ok    $1"; ran=$((ran+1)); }
+fail() { echo "  FAIL  $1"; ran=$((ran+1)); fails=$((fails+1)); }
+skip() { echo "  skip  $2"; skipped=$((skipped+$1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+have() { for c in "$@"; do command -v "$c" >/dev/null 2>&1 || return 1; done; }
+commit() { (cd "$1" && git init -q -b main . && git add -A \
+  && git -c user.name=r -c user.email=r@x commit -qm start) ; }
+# retarget <board> <name> <pursuit>: the shipped board, pointed at a throwaway pursuit
+retarget() { python3 - "$OST/examples/$1" "$T/$2.json" "$3" "$2" <<'PY'
+import json, sys
+src, dst, repo, name = sys.argv[1:5]
+g = json.load(open(src))
+g["graph"] = name
+g["sandbox"]["repo"] = repo
+g["sandbox"]["root"] = dst.rsplit("/", 1)[0] + "/wt-" + name
+json.dump(g, open(dst, "w"), indent=2)
+PY
+}
+
+echo "== the three boards, as data"
+assert "1. rust: cargo tools, cargo checks, the cargo environment, and the human command" "
+import json; g=json.load(open('$OST/examples/rust-quote-engine.json'))
+s=g['sandbox']
+assert [t for t in s['tools'] if t['cmd'].startswith('cargo ')], s['tools']
+assert all(t.get('what') for t in s['tools']), s['tools']
+assert all(w['check'].startswith('cargo ') for w in g['work']), g['work']
+assert set(s['env_passthrough'])=={'CARGO_HOME','RUSTUP_HOME'}, s['env_passthrough']
+assert 'cargo test' in s['notes'] and 'cargo clippy' in s['notes'], s['notes']"
+assert "2. python: pytest tools, pytest checks, the interpreter environment, the human command" "
+import json; g=json.load(open('$OST/examples/python-etl-backfill.json'))
+s=g['sandbox']
+assert [t for t in s['tools'] if t['cmd']=='pytest'], s['tools']
+assert all(t.get('what') for t in s['tools']), s['tools']
+assert all(w['check'].startswith('pytest ') for w in g['work']), g['work']
+assert set(s['env_passthrough'])=={'VIRTUAL_ENV','PYTHONPATH'}, s['env_passthrough']
+assert 'pytest -q' in s['notes'], s['notes']"
+assert "3. typescript: npm/npx tools, tsc and npm test as checks, CI and the npm cache passed" "
+import json; g=json.load(open('$OST/examples/ts-webhook-types.json'))
+s=g['sandbox']
+assert {'npx tsc','npm test'} <= {t['cmd'] for t in s['tools']}, s['tools']
+assert all(t.get('what') for t in s['tools']), s['tools']
+assert [w for w in g['work'] if w['check'].startswith('npx tsc ')], g['work']
+assert [w for w in g['work'] if w['check'].startswith('npm test')], g['work']
+assert set(s['env_passthrough'])=={'CI','NPM_CONFIG_CACHE'}, s['env_passthrough']
+assert 'npx tsc --noEmit' in s['notes'] and 'npm test' in s['notes'], s['notes']
+assert s['link']==['node_modules'], s['link']"
+assert "4. no declared tool is a bare interpreter or a path relative to doctor's own cwd" "
+import json
+bare={'bash','sh','zsh','node','python','python3','ruby','perl','env'}
+for f in ('rust-quote-engine','python-etl-backfill','ts-webhook-types'):
+  for t in json.load(open('$OST/examples/%s.json'%f))['sandbox']['tools']:
+    w=t['cmd'].split()
+    assert w[0] not in bare, (f,t['cmd'],'bare interpreter')
+    assert '/' not in w[0], (f,t['cmd'],'doctor resolves a relative path against its own cwd')"
+
+echo "== rust, a throwaway cargo crate"
+if have cargo git clippy-driver; then
+  P="$T/quote-engine"; mkdir -p "$P/src"
+  printf '[package]\nname = "quote-engine"\nversion = "0.1.0"\nedition = "2021"\n' > "$P/Cargo.toml"
+  cat > "$P/src/lib.rs" <<'RS'
+pub mod tariff {
+    #[derive(Debug, PartialEq)]
+    pub enum QuoteError {
+        ZeroDistance,
+    }
+
+    pub fn quote(cents: u32, miles: u32) -> Result<u32, QuoteError> {
+        if miles == 0 {
+            return Err(QuoteError::ZeroDistance);
+        }
+        Ok(cents / miles)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn zero_miles_is_an_error() {
+            assert_eq!(quote(100, 0), Err(QuoteError::ZeroDistance));
+        }
+
+        #[test]
+        fn a_mile_is_priced() {
+            assert_eq!(quote(100, 2), Ok(50));
+        }
+    }
+}
+RS
+  printf 'target\n' > "$P/.gitignore"
+  (cd "$P" && cargo generate-lockfile --offline >/dev/null 2>&1) && commit "$P" >/dev/null
+  retarget rust-quote-engine.json rust "$P"
+  node doctor.mjs "$T/rust.json" > "$T/rust-doctor.log" 2>&1; echo "  doctor exit $?"
+  node run.mjs "$T/rust.json" --exec "$FAKE" > "$T/rust-run.log" 2>&1; echo "  run exit $?"
+  cp -r "$P" "$T/broken" && rm -rf "$T/broken/.git" \
+    && python3 -c "
+p='$T/broken/src/lib.rs'; s=open(p).read()
+open(p,'w').write(s.replace('Ok(50)','Ok(51)'))" \
+    && commit "$T/broken" >/dev/null
+  retarget rust-quote-engine.json rust-broken "$T/broken"
+  node run.mjs "$T/rust-broken.json" --exec "$FAKE" > "$T/rust-broken.log" 2>&1; echo "  broken run exit $?"
+  assert "5. doctor is ready to launch and every declared cargo command resolved" "
+t=open('$T/rust-doctor.log').read()
+assert 'ready to launch' in t, t[-500:]
+assert not [l for l in t.splitlines() if 'FAIL' in l and 'tool' in l], t
+rows=[l for l in t.splitlines() if ' tool ' in l and 'tool answers' not in l]
+assert len(rows)==4, rows"
+  assert "6. two attempts done, cargo test and cargo clippy ran on the branch" "
+import json; g=json.load(open('$T/rust.json'))
+a=g['attempts']; assert len(a)==2 and all(x['state']=='done' for x in a), [(x['id'],x['state']) for x in a]
+c=[x['result']['check'] for x in a]
+assert [x['cmd'] for x in c]==['cargo test --locked --offline',
+  'cargo clippy --locked --offline --all-targets -- -D warnings'], c
+assert all(x['ok'] and x['on'].startswith('ost/'+g['graph']+'/') for x in c), c"
+  assert "7. a broken test fails the same run, with cargo's own words on the record" "
+import json; g=json.load(open('$T/rust-broken.json'))
+a=[x for x in g['attempts'] if x['of']=='w-zero-miles']
+assert a and all(x['state']=='failed' for x in a), [(x['id'],x['state']) for x in a]
+r=a[0]['result']; assert r['check']['ok'] is False and 'exit 101' in r['why'], r
+assert [l for l in r['output'] if 'test result: FAILED' in l], r['output']
+assert not [x for x in g['attempts'] if x['of']=='w-clippy'], 'the dependent must not have run'"
+else
+  skip 3 "5-7. rust: cargo or clippy is not on PATH"
+fi
+
+echo "== python, a throwaway package"
+if have pytest git; then
+  P="$T/fare-etl"; mkdir -p "$P/fare_etl" "$P/tests"
+  : > "$P/fare_etl/__init__.py"
+  cat > "$P/fare_etl/loader.py" <<'PY2'
+"""Load fare rows. A row may or may not carry the trailing surcharge column."""
+
+
+def load_fares(rows):
+    out = []
+    for row in rows:
+        surcharge = row[2] if len(row) > 2 else None
+        out.append({"trip": row[0], "cents": int(row[1]), "surcharge": surcharge})
+    return out
+PY2
+  cat > "$P/tests/test_loader.py" <<'PY2'
+from fare_etl.loader import load_fares
+
+
+def test_full_row():
+    assert load_fares([["t1", "900", "12"]]) == [
+        {"trip": "t1", "cents": 900, "surcharge": "12"}
+    ]
+
+
+def test_row_without_surcharge():
+    assert load_fares([["t2", "900"]]) == [
+        {"trip": "t2", "cents": 900, "surcharge": None}
+    ]
+PY2
+  printf '__pycache__\n.venv\n' > "$P/.gitignore"
+  commit "$P" >/dev/null
+  retarget python-etl-backfill.json python "$P"
+  python3 - "$T" <<'PY2'
+import json, sys
+T = sys.argv[1]
+g = json.load(open(f"{T}/python.json"))
+g["sandbox"]["tools"] = g["sandbox"]["tools"] + [
+    {"cmd": "python3 -m pytest", "what": "the same runner, spelled through the interpreter"}]
+json.dump(g, open(f"{T}/python-modtool.json", "w"), indent=2)
+g = json.load(open(f"{T}/python.json"))
+g["graph"] = "python-noenv"; g["sandbox"]["env_passthrough"] = []
+g["sandbox"]["root"] = f"{T}/wt-python-noenv"
+json.dump(g, open(f"{T}/python-noenv.json", "w"), indent=2)
+PY2
+  node doctor.mjs "$T/python.json" > "$T/py-doctor.log" 2>&1; echo "  doctor exit $?"
+  node doctor.mjs "$T/python-modtool.json" > "$T/py-modtool.log" 2>&1; echo "  doctor on the -m spelling exit $?"
+  PYTHONPATH=. node run.mjs "$T/python.json" --exec "$FAKE" > "$T/py-run.log" 2>&1; echo "  run exit $?"
+  PYTHONPATH=. node run.mjs "$T/python-noenv.json" --exec "$FAKE" > "$T/py-noenv.log" 2>&1; echo "  run with env_passthrough emptied exit $?"
+  assert "8. pytest resolves, and so does the same board written python3 -m pytest" "
+t=open('$T/py-doctor.log').read(); assert 'ready to launch' in t, t[-500:]
+assert not [l for l in t.splitlines() if 'FAIL' in l], t
+b=open('$T/py-modtool.log').read()
+assert 'ready to launch' in b, b[-500:]
+assert not [l for l in b.splitlines() if 'FAIL' in l], b
+assert [l for l in b.splitlines() if ' ok ' in l and 'python3 -m pytest ' in l], b"
+  assert "9. two attempts done, pytest ran on the branch" "
+import json; g=json.load(open('$T/python.json'))
+a=g['attempts']; assert len(a)==2 and all(x['state']=='done' for x in a), [(x['id'],x['state']) for x in a]
+c=[x['result']['check'] for x in a]
+assert [x['cmd'] for x in c]==['pytest -q tests/test_loader.py','pytest -q'], c
+assert all(x['ok'] and x['on'].startswith('ost/'+g['graph']+'/') for x in c), c"
+  assert "10. with env_passthrough emptied the check cannot import the package" "
+import json; g=json.load(open('$T/python-noenv.json'))
+a=[x for x in g['attempts'] if x['of']=='w-loader']
+assert a and all(x['state']=='failed' for x in a), [(x['id'],x['state']) for x in a]
+r=a[0]['result']; assert r['check']['cmd']=='pytest -q tests/test_loader.py', r
+assert [l for l in r['output'] if 'ModuleNotFoundError' in l], r['output']"
+else
+  skip 3 "8-10. python: pytest is not on PATH"
+fi
+
+echo "== typescript, a throwaway package"
+if have npm npx tsc git; then
+  P="$T/booking-api"; mkdir -p "$P/src" "$P/test" "$P/node_modules/.bin"
+  cat > "$P/package.json" <<'JS'
+{
+  "name": "booking-api",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": { "test": "node --test" },
+  "devDependencies": { "typescript": "*" }
+}
+JS
+  cat > "$P/tsconfig.json" <<'JS'
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2022",
+    "module": "node16",
+    "moduleResolution": "node16"
+  },
+  "include": ["src"]
+}
+JS
+  cat > "$P/src/webhook.ts" <<'JS'
+export type PaymentEvent =
+  | { kind: "payment.succeeded"; id: string; bookingId: string }
+  | { kind: "payment.failed"; id: string; bookingId: string; reason: string };
+
+export function confirms(event: PaymentEvent): boolean {
+  switch (event.kind) {
+    case "payment.succeeded":
+      return true;
+    case "payment.failed":
+      return false;
+  }
+}
+JS
+  cat > "$P/test/webhook.test.js" <<'JS'
+const test = require("node:test");
+const assert = require("node:assert");
+
+test("a redelivered event id is only confirmed once", () => {
+  const seen = new Set();
+  for (const id of ["evt_1", "evt_1"]) seen.add(id);
+  assert.equal(seen.size, 1);
+});
+JS
+  ln -sf "$(command -v tsc)" "$P/node_modules/.bin/tsc"
+  printf 'node_modules\n' > "$P/.gitignore"
+  commit "$P" >/dev/null
+  retarget ts-webhook-types.json ts "$P"
+  node doctor.mjs "$T/ts.json" > "$T/ts-doctor.log" 2>&1; echo "  doctor exit $?"
+  CI=1 node run.mjs "$T/ts.json" --exec "$FAKE" > "$T/ts-run.log" 2>&1; echo "  run exit $?"
+  assert "11. doctor is ready to launch and every declared npm command resolved" "
+t=open('$T/ts-doctor.log').read()
+assert 'ready to launch' in t, t[-500:]
+assert not [l for l in t.splitlines() if 'FAIL' in l], t
+rows=[l for l in t.splitlines() if ' tool ' in l and 'tool answers' not in l]
+assert len(rows)==3, rows"
+  assert "12. two attempts done: npx tsc and npm test ran, node_modules linked into both trees" "
+import json; g=json.load(open('$T/ts.json'))
+a=g['attempts']; assert len(a)==2 and all(x['state']=='done' for x in a), [(x['id'],x['state']) for x in a]
+c=[x['result']['check'] for x in a]
+assert [x['cmd'] for x in c]==['npx tsc --noEmit -p tsconfig.json','npm test --silent'], c
+assert all(x['ok'] for x in c), c
+t=open('$T/ts-run.log').read()
+assert len([l for l in t.splitlines() if 'linked node_modules ->' in l])==4, t"
+else
+  skip 2 "11-12. typescript: npm, npx or tsc is not on PATH"
+fi
+
+echo ""
+if [ "$fails" -ne 0 ]; then
+  echo "  $fails failing."
+elif [ "$skipped" -ne 0 ]; then
+  echo "  $ran assertions, all passing; $skipped SKIPPED and therefore unproven"
+  echo "  (a toolchain above is not on PATH — this run did not test it)"
+else
+  echo "  $ran assertions, all passing."
+fi
+exit $(( fails > 0 ))

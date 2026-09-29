@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Stopping a run, rehearsed end to end with the fake executor: zero model calls, a throwaway
+# pursuit, real detached cells that really get killed.
+#
+#   bin/rehearse-stop             prints one line per assertion, exits non-zero if any fails
+#
+# What is rehearsed, in the order an operator meets it:
+#   1. `--stop` on a live run: nothing new launches, the cells in flight land and are recorded,
+#      the runner exits and takes its runfile with it
+#   2. `--stop --now`: the cells are killed, recorded as stopped by the operator, and kept
+#      rather than torn down, because a killed cell may have committed something
+#   3. the runner dead with its cells still spending, which is the case that had no answer at
+#      all: `--stop` reports them and leaves them, `--stop --now` kills them
+#   4. and the next runner still sweeps what a killed cell left
+#   5. a runfile whose pid has been recycled by an unrelated process is not signalled at
+#   6. a cell that outlived its runner and is still working is adopted, and the wait for it is
+#      bounded: the next runner says what it is waiting for, gives up on time, and leaves the
+#      cell alone rather than blocking the whole graph on one wedged agent
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-stop.XXXXXX")" && pwd -P)
+trap 'pkill -f "$T" 2>/dev/null; rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G="$T/stop.json"
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+# Four items, two at a time, each cell thinking for 40 seconds. Two are always in flight and two
+# are always still ready, so "nothing new launches" is a claim the record can be held to.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-stop", "concurrency": 2, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4910},
+     "work": [{"id": f"w-{n}", "what": f"do {n}", "params": {"fake": {"sleep": 40}}} for n in "abcdefgh"],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/stop.json", "w"), indent=2)
+PY
+
+# Wait until n cells are running, or give up. The runfile is written before the first launch, so
+# its presence alone is not enough: the cells have to exist.
+running() { python3 -c "
+import json;g=json.load(open('$G'))
+print(len([a for a in g['attempts'] if a['state']=='running' and a.get('cell_pid')]))" 2>/dev/null || echo 0; }
+await_cells() { for _ in $(seq 1 60); do [ "$(running)" -ge "$1" ] && return 0; sleep 1; done; return 1; }
+launch() {
+  node --input-type=module - "$G" "$OST" "$1" <<'JS'
+import { spawn } from 'node:child_process';
+import { openSync, closeSync } from 'node:fs';
+const [board, root, log] = process.argv.slice(2);
+const fd = openSync(log, 'a');
+const child = spawn(process.execPath, [`${root}/run.mjs`, board, '--exec', `bash '${root.replaceAll("'", "'\\''")}/executors/fake.sh'`],
+  { detached: true, stdio: ['ignore', fd, fd] });
+closeSync(fd); child.unref();
+JS
+}
+runner_pid() { python3 -c "import json;print(json.load(open('$T/stop.run.json'))['pid'])" 2>/dev/null; }
+await_gone() { for _ in $(seq 1 90); do
+  node --input-type=module -e 'import { alive } from "./lib/liveness.mjs"; process.exit(alive(Number(process.argv[1])) ? 1 : 0)' "$1" && return 0
+  sleep 1
+done; return 1; }
+
+echo "== 1: --stop lets what is in flight land"
+launch "$T/run1.log"
+await_cells 2 || fail "two cells never started (run 1)"
+R1=$(runner_pid)
+node run.mjs "$G" --stop > "$T/stop1.log" 2>&1; echo "  stop exit $?"
+await_gone "$R1" || fail "the runner never exited after --stop"
+
+assert "1a. the two cells in flight landed and are recorded done" "
+import json;g=json.load(open('$G'))
+assert len(g['attempts'])==2, g['attempts']
+assert all(a['state']=='done' for a in g['attempts']), [a['state'] for a in g['attempts']]"
+assert "1b. nothing new launched after the stop: two items are still untouched" "
+import json;g=json.load(open('$G'))
+assert len({a['of'] for a in g['attempts']})==2"
+assert "1c. the run said what it was doing and why it ended" "
+import sys;t=open('$T/run1.log').read()
+assert 'stopping. Nothing new launches' in t, t[-800:]
+assert \"stopped at the operator's stop\" in t, t[-800:]"
+assert "1d. the runner exited and took its runfile with it" "
+import os;assert not os.path.exists('$T/stop.run.json')"
+assert "1e. a landed cell is still torn down" "
+import os;assert not [d for d in os.listdir('$T/wt/rehearse-stop') if d.startswith('a-')], os.listdir('$T/wt/rehearse-stop')"
+
+echo "== 2: --stop --now kills the cells"
+launch "$T/run2.log"
+await_cells 2 || fail "two cells never started (run 2)"
+R2=$(runner_pid)
+PIDS=$(python3 -c "
+import json;g=json.load(open('$G'))
+print(' '.join(str(a['cell_pid']) for a in g['attempts'] if a['state']=='running'))")
+node run.mjs "$G" --stop --now > "$T/stop2.log" 2>&1; echo "  stop --now exit $?"
+await_gone "$R2" || fail "the runner never exited after --stop --now"
+
+assert "2a. the killed cells are recorded as stopped by the operator, not as exit 1" "
+import json;g=json.load(open('$G'))
+k=[a for a in g['attempts'] if a['id'] in ('a-0003','a-0004')]
+assert len(k)==2, [a['id'] for a in g['attempts']]
+assert all(a['state']=='failed' for a in k), [a['state'] for a in k]
+assert all('stopped by the operator' in a['result']['why'] for a in k), [a['result']['why'] for a in k]"
+assert "2b. no cell of theirs is still alive" "
+import subprocess
+for p in '$PIDS'.split():
+    state=subprocess.run(['ps','-p',p,'-o','stat='],capture_output=True,text=True).stdout.strip()
+    assert not state or state.startswith('Z'), (p,state)"
+assert "2c. a killed cell is kept, not torn down: its worktree is still there to read" "
+import os;d=[x for x in os.listdir('$T/wt/rehearse-stop') if x.startswith('a-')]
+assert len(d)==2, d"
+assert "2d. the run said the cells were killed and that they were kept" "
+t=open('$T/run2.log').read()
+assert 'killing 2 cell(s)' in t, t[-800:]
+assert 'left standing rather than torn down' in t, t[-800:]"
+
+echo "== 3: the runner dead, its cells still spending"
+launch "$T/run3.log"
+await_cells 1 || fail "no cell started (run 3)"
+kill -9 "$(runner_pid)"; sleep 1
+CELL=$(python3 -c "
+import json;g=json.load(open('$G'))
+print([a['cell_pid'] for a in g['attempts'] if a['state']=='running' and a.get('cell_pid')][0])")
+OF3=$(python3 -c "
+import json;g=json.load(open('$G'))
+print([a['of'] for a in g['attempts'] if a['state']=='running' and a.get('cell_pid')][0])")
+node run.mjs "$G" --stop > "$T/stop3.log" 2>&1; rc3=$?; echo "  stop exit $rc3"
+assert "3a. --stop finds the orphaned cells, says they are still spending, and leaves them" "
+t=open('$T/stop3.log').read()
+assert 'is gone, but' in t and 'still spending' in t, t
+assert 'left alone' in t, t
+assert $rc3 == 10, $rc3
+import subprocess; assert subprocess.check_output(['ps','-p','$CELL','-o','stat='],text=True).strip()[0]!='Z'"
+node run.mjs "$G" --stop --now > "$T/stop4.log" 2>&1; rc4=$?; echo "  stop --now exit $rc4"
+sleep 2
+assert "3b. --stop --now kills them, and says the record is left for the next runner" "
+import os
+t=open('$T/stop4.log').read()
+assert 'killed' in t, t
+assert $rc4 == 0, $rc4
+import subprocess
+state=subprocess.run(['ps','-p','$CELL','-o','stat='],capture_output=True,text=True).stdout.strip()
+assert not state or state.startswith('Z'), state"
+assert "3c. the killed attempt is left running in the record, for the sweep to settle" "
+import json;g=json.load(open('$G'))
+assert any(a['state']=='running' for a in g['attempts']), [a['state'] for a in g['attempts']]"
+
+echo "== 4: the next runner sweeps what the killed cell left"
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" --only "$OF3" > "$T/run4.log" 2>&1
+assert "4a. no attempt is left running after the sweep" "
+import json;g=json.load(open('$G'))
+assert not any(a['state']=='running' for a in g['attempts']), [a['state'] for a in g['attempts']]"
+assert "4b. the sweep said whose cell it was reading" "
+t=open('$T/run4.log').read()
+assert 'swept' in t or 'found' in t, t[-800:]"
+
+echo "== 5: a recycled pid is not signalled at"
+# A runfile that names a live pid which is not a runner for this graph. `alive()` says yes to it
+# on purpose, so nothing but reading what the process actually is can tell the difference, and
+# the difference is whether `stop` sends SIGTERM at a stranger.
+sleep 300 & VICTIM=$!
+python3 -c "
+import json;json.dump({'graph':'rehearse-stop','file':'$G','pid':$VICTIM,
+ 'started':'2026-09-04T00:00:00Z','beat':'2026-09-04T00:00:00Z','launched':0,'budget':None},
+ open('$T/stop.run.json','w'))"
+node run.mjs "$G" --stop --now > "$T/stop6.log" 2>&1; rc6=$?
+assert "5a. it says the pid was recycled, signals nothing, and the stranger is still alive" "
+t=open('$T/stop6.log').read()
+assert 'has been recycled' in t, t
+assert 'Nothing is signalled at it' in t, t
+import subprocess; assert subprocess.check_output(['ps','-p','$VICTIM','-o','stat='],text=True).strip()[0]!='Z'"
+kill $VICTIM 2>/dev/null; rm -f "$T/stop.run.json"
+
+echo "== 6: the adopt wait is bounded, and gives up without killing anything"
+launch "$T/run5.log"
+await_cells 1 || fail "no cell started (run 5)"
+R5=$(runner_pid); [ -n "$R5" ] && kill -9 "$R5"; sleep 1
+CELL5=$(python3 -c "
+import json;g=json.load(open('$G'))
+print([a['cell_pid'] for a in g['attempts'] if a['state']=='running' and a.get('cell_pid')][0])")
+OF5=$(python3 -c "
+import json;g=json.load(open('$G'))
+print([a['of'] for a in g['attempts'] if a['state']=='running' and a.get('cell_pid')][0])")
+# 0.05 minutes is three seconds. The cell is thinking for forty, so the wait always expires.
+start=$SECONDS
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" --only "$OF5" --adopt-wait 0.05 > "$T/run6.log" 2>&1
+took=$((SECONDS - start)); echo "  the next runner took ${took}s to get past the orphan"
+
+assert "6a. it waited for the cell rather than failing it on sight, and said for how long" "
+t=open('$T/run6.log').read()
+assert 'outlived' in t and 'waiting up to 0.05m' in t, t[-600:]"
+assert "6b. it gave up on time instead of blocking the graph" "
+assert $took < 30, $took"
+assert "6c. it said the cell was left alone, and how to kill it" "
+t=open('$T/run6.log').read()
+assert 'is still running after' in t, t[-600:]
+assert 'stop --now' in t, t[-600:]"
+assert "6d. the cell is untouched: still alive, still owning its attempt" "
+import json, os
+import subprocess; assert subprocess.check_output(['ps','-p','$CELL5','-o','stat='],text=True).strip()[0]!='Z'
+g=json.load(open('$G'))
+assert any(a['state']=='running' and a.get('cell_pid')==$CELL5 for a in g['attempts'])"
+node run.mjs "$G" --stop --now > "$T/stop5.log" 2>&1
+
+echo ""
+[ "$fails" = 0 ] && echo "  all assertions passed" || echo "  $fails assertion(s) failed"
+exit $((fails > 0))

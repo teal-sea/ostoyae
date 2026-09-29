@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# The campaign allowance and the emptied queue, rehearsed with the fake executor: zero model calls.
+#
+#   bin/rehearse-allowance        prints one line per assertion, exits non-zero if any fails
+#
+# Two things a bounded, unattended campaign needs that the runner did not have:
+#
+#   1. An allowance that counts every agent session, in every role, and does not reset when the
+#      controller restarts. `--max-launches` is neither: it counts work launches only, verify
+#      attempts are deliberately outside it, and its counter is a variable in one invocation of
+#      run.mjs. Both halves of that are pinned below as facts, not repaired, because an
+#      evaluation matched on work must not have its arms moved by how often the judge ran.
+#      `--max-invocations` is the campaign's unit and reads `attempts[]`, which is the file.
+#
+#   2. A reason when the queue empties. A drained queue is not a finished mission, and the runner
+#      used to say nothing at all about the difference: no budget bound, so it printed the report
+#      and exited. The runfile that could have said why is deleted on a clean exit, by design.
+#      So the verdict is classified, printed, and written to `last_run` on the graph.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-allowance.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+count() { python3 -c "import json;print(len(json.load(open('$1'))['attempts']))"; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+# A board with mapping and a judge on, so the run spends sessions in all three roles: a map
+# attempt per item, a verify attempt on what the map proposes, and a prove attempt after it.
+mkboard() {
+python3 - "$T" "$1" "$2" <<'PY'
+import json, sys
+T, name, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+work = [{"id": f"w-{n}", "what": f"item {n}", "check": "true",
+         "params": {"fake": {"map": {
+             "map": {"settles": f"item {n}", "cost": "small"},
+             "work": [{"id": f"w-{n}-needs", "what": f"the lemma item {n} calls"}],
+             "edges": [{"from": f"w-{n}-needs", "to": f"w-{n}", "why": "it calls it"}]}}}}
+        for n in range(1, 5)]
+g = {"graph": name, "concurrency": 2, "max_attempts": 1,
+     "mapping": {"what": "map it", "max_attempts": 1},
+     "judge": {"verify": "judge it", "default_check": "test -n '{id}'"},
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-{name}", "base": "main", "port_base": port},
+     "work": work, "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/{name}.json", "w"), indent=2)
+PY
+}
+
+echo "== how many sessions this board spends when nothing caps it"
+mkboard free 4940
+node run.mjs "$T/free.json" --exec "bash $OST/executors/fake.sh" > "$T/free.log" 2>&1
+FREE=$(count "$T/free.json")
+echo "  $FREE attempts, uncapped"
+assert "0. the board spends sessions in more than one role, so an all-role cap has something to bind on" "
+import json;g=json.load(open('$T/free.json'))
+kinds={a.get('kind','prove') for a in g['attempts']}
+assert 'verify' in kinds and 'map' in kinds, kinds
+assert $FREE > 5, $FREE"
+
+echo "== --max-invocations charges every role"
+mkboard capped 4950
+node run.mjs "$T/capped.json" --exec "bash $OST/executors/fake.sh" --max-invocations 5 > "$T/capped.log" 2>&1
+CAP1=$(count "$T/capped.json")
+echo "  $CAP1 attempts against an allowance of 5"
+assert "1. the allowance held: no more sessions than it allows" "
+assert $CAP1 <= 5, $CAP1"
+assert "2. it bound before the board was finished, so it is the thing that stopped the run" "
+assert $CAP1 < $FREE, ($CAP1, $FREE)
+t=open('$T/capped.log').read()
+assert 'the invocation allowance of 5' in t, t[-800:]"
+assert "3. verify attempts were charged to it, not run for free beside it" "
+import json;g=json.load(open('$T/capped.json'))
+v=[a for a in g['attempts'] if a.get('kind')=='verify']
+assert v, 'no verify attempt ran, so this rehearsal proves nothing about the judge'
+assert len(g['attempts']) <= 5, len(g['attempts'])"
+
+echo "== and does not reset when the controller restarts"
+node run.mjs "$T/capped.json" --exec "bash $OST/executors/fake.sh" --max-invocations 5 > "$T/capped2.log" 2>&1
+CAP2=$(count "$T/capped.json")
+echo "  $CAP2 attempts after a second run at the same allowance"
+assert "4. a restarted runner resumes the count instead of starting over" "
+assert $CAP2 == $CAP1, ($CAP1, $CAP2)
+t=open('$T/capped2.log').read()
+assert 'the invocation allowance of 5' in t, t[-800:]"
+assert "5. the run says how much of the allowance was already spent before it launched anything" "
+t=open('$T/capped2.log').read()
+assert 'max_invocations 5 all roles, ${CAP1} already spent' in t, t[:400]"
+
+echo "== --max-launches is a different instrument, and stays one"
+mkboard work 4960
+node run.mjs "$T/work.json" --exec "bash $OST/executors/fake.sh" --max-launches 2 > "$T/work1.log" 2>&1
+W1=$(count "$T/work.json")
+node run.mjs "$T/work.json" --exec "bash $OST/executors/fake.sh" --max-launches 2 > "$T/work2.log" 2>&1
+W2=$(count "$T/work.json")
+echo "  $W1 attempts after one run at --max-launches 2, $W2 after two"
+assert "6. --max-launches counts work in one invocation and starts over on the next: not a campaign allowance" "
+assert $W2 > $W1, ($W1, $W2)"
+assert "7. and it lets the judge run beside it, which is why it cannot be the all-role cap" "
+import json;g=json.load(open('$T/work.json'))
+verifies=len([a for a in g['attempts'] if a.get('kind')=='verify'])
+works=len([a for a in g['attempts'] if a.get('kind')!='verify'])
+assert verifies > 0, 'no verify attempt ran'
+assert works > 2, ('work launches across two runs', works)"
+
+echo "== the emptied queue says why"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+done = {"graph": "drain-done", "concurrency": 2, "max_attempts": 1,
+        "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-done", "base": "main", "port_base": 4970},
+        "work": [{"id": f"w-{n}", "what": f"item {n}", "check": "true"} for n in range(1, 4)],
+        "edges": [], "attempts": []}
+json.dump(done, open(f"{T}/done.json", "w"), indent=2)
+dead = {"graph": "drain-dead", "concurrency": 2, "max_attempts": 1,
+        "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-dead", "base": "main", "port_base": 4980},
+        "work": [{"id": f"w-{n}", "what": f"item {n}", "check": "false",
+                  "params": {"fake": {"prove": "fail"}}} for n in range(1, 4)],
+        "edges": [], "attempts": []}
+json.dump(dead, open(f"{T}/dead.json", "w"), indent=2)
+PY
+node run.mjs "$T/done.json" --exec "bash $OST/executors/fake.sh" > "$T/done.log" 2>&1
+node run.mjs "$T/dead.json" --exec "bash $OST/executors/fake.sh" > "$T/dead.log" 2>&1
+assert "8. a board that satisfied every check says so, and says it is not an answer to the question" "
+import json;g=json.load(open('$T/done.json'))
+lr=g.get('last_run');assert lr, 'no last_run written'
+assert lr['drained']=='board-satisfied', lr
+assert lr['stopped_by'] is None, lr
+t=open('$T/done.log').read()
+assert 'the queue emptied:' in t, t[-600:]
+assert 'not an answer to the question' in t, t[-600:]"
+assert "9. a board that ran out of tries is classified as that, with the items named" "
+import json;g=json.load(open('$T/dead.json'))
+lr=g.get('last_run');assert lr, 'no last_run written'
+assert lr['drained']=='exhausted', lr
+assert 'max_attempts' in lr['why'], lr
+assert 'w-1' in lr['why'], lr
+t=open('$T/dead.log').read()
+assert 'the queue emptied:' in t, t[-600:]"
+assert "10. the two verdicts are different, so an empty queue cannot be read as a finished one" "
+import json
+a=json.load(open('$T/done.json'))['last_run']['drained']
+b=json.load(open('$T/dead.json'))['last_run']['drained']
+assert a != b, (a, b)"
+assert "11. a run stopped by the allowance records what stopped it, not a drain verdict" "
+import json;g=json.load(open('$T/capped.json'))
+lr=g.get('last_run');assert lr, 'no last_run written'
+assert lr['drained'] is None, lr
+assert 'invocation allowance' in (lr['stopped_by'] or ''), lr
+assert lr['invocation_allowance'] == 5, lr"
+
+echo ""
+[ "$fails" -eq 0 ] && echo "  rehearse-allowance: all assertions passed" || echo "  rehearse-allowance: $fails FAILED"
+exit "$fails"

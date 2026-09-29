@@ -1,0 +1,55 @@
+{
+  "graph": "python-etl-backfill",
+  "concurrency": 2,
+  "max_attempts": 2,
+  "defaults": {
+    "agent": "claude",
+    "model": "sonnet",
+    "budget": "20m"
+  },
+  "sandbox": {
+    "repo": "/path/to/fare-etl",
+    "root": "/path/to/ostoyae-worktrees",
+    "base": "main",
+    "port_base": 4210,
+    "env_passthrough": [
+      "VIRTUAL_ENV",
+      "PYTHONPATH"
+    ],
+    "tools": [
+      {
+        "cmd": "pytest",
+        "what": "run the suite. Spelled `pytest`, not `python3 -m pytest`: see the note below",
+        "probe": "pytest --version"
+      },
+      {
+        "cmd": "ruff check",
+        "what": "lint. Not a gate on any item, but the agent may run it",
+        "probe": "ruff --version"
+      },
+      {
+        "cmd": "mypy",
+        "what": "type-check the package, same standing as ruff"
+      }
+    ],
+    "notes": "A human runs `pytest -q` from the repo root with the project's venv activated. pytest reaches the cell through PATH, which the cell keeps whole, so the venv the run was launched from is the venv the check uses; nothing is installed inside a cell. PYTHONPATH is passed because it decides which tree wins: a venv holding an editable install of this project points at the pursuit, not at the cell, and a relative PYTHONPATH (`.` here, `src` in a src-layout repo) resolves inside whichever tree is cwd, so the branch's own code is what gets imported. VIRTUAL_ENV is passed because pytest plugins, tox and uv read it to decide which interpreter they are in. `python3 -m pytest` is the same command and must not be declared as a tool: doctor reads the token after an interpreter as the script and reports `-m is not there`."
+  },
+  "work": [
+    {
+      "id": "w-loader",
+      "what": "Make `fare_etl.loader.load_fares` tolerate a row whose trailing surcharge column is absent, yielding None for that field instead of raising IndexError. Cover both shapes of row in tests/test_loader.py.",
+      "needs": [],
+      "check": "pytest -q tests/test_loader.py"
+    },
+    {
+      "id": "w-backfill",
+      "what": "Backfill the 2026-07 rows the loader dropped, in a script that is safe to run twice: a second run must not double a fare.",
+      "needs": [
+        "w-loader"
+      ],
+      "check": "pytest -q"
+    }
+  ],
+  "edges": [],
+  "attempts": []
+}

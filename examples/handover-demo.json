@@ -1,0 +1,35 @@
+{
+  "graph": "handover-demo",
+  "concurrency": 1,
+  "max_attempts": 1,
+  "sandbox": {
+    "repo": "REWRITTEN-BY-bin/campaign",
+    "root": "REWRITTEN-BY-bin/campaign",
+    "base": "main",
+    "port_base": 4980
+  },
+  "work": [
+    {
+      "id": "h-1",
+      "what": "land h-1.txt",
+      "check": "test -f h-1.txt"
+    },
+    {
+      "id": "h-2",
+      "what": "land h-2.txt",
+      "check": "test -f h-2.txt"
+    },
+    {
+      "id": "h-3",
+      "what": "land h-3.txt",
+      "check": "test -f h-3.txt"
+    },
+    {
+      "id": "h-4",
+      "what": "land h-4.txt",
+      "check": "test -f h-4.txt"
+    }
+  ],
+  "edges": [],
+  "attempts": []
+}

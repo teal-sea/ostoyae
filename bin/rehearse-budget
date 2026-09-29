@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# The money cap and the check's authority, rehearsed with the fake executor: zero model calls.
+#
+#   bin/rehearse-budget           prints one line per assertion, exits non-zero if any fails
+#
+# Both of these were found in production rather than here, which is the reason this file exists:
+#   1. a run can pass its cap, because attempts already in flight cannot be un-spent. On
+#      2026-09-04 proves ran from $0.69 to $35.37, each was reserved at the $2.68 mean, six were
+#      in flight, and a $275 cap took $314.40. The engine does not decide what to do about that:
+#      it says OVER by how much, names the figure it reserved at and the one that would have
+#      held, and `--reserve-usd` is the operator's dial. Until now the fake executor reported no
+#      cost at all, so no money path could be rehearsed and this had to be paid for to be seen.
+#   2. an attempt that finds its work already done changes nothing, so its executor has nothing
+#      to commit and exits non-zero, so the check never ran and the attempt was recorded failed.
+#      The check is the authority over the agent's word, in both directions.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-budget.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+# Five cheap attempts and one dear one, three at a time, against a $20 cap. The dear one settles
+# first so its price is in the record before the cap is next tested.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+work = [{"id": "w-dear", "what": "the expensive one", "check": "true",
+         "params": {"fake": {"usd": 12, "sleep": 1}}}]
+work += [{"id": f"w-{n}", "what": f"cheap {n}", "check": "true",
+          "params": {"fake": {"usd": 1, "sleep": 3}}} for n in range(1, 6)]
+g = {"graph": "rehearse-budget", "concurrency": 3, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4930},
+     "work": work, "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/budget.json", "w"), indent=2)
+PY
+G="$T/budget.json"
+
+echo "== the cap, on the engine's default reservation"
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" --max-usd 20 > "$T/run.log" 2>&1
+spent=$(python3 -c "
+import json;g=json.load(open('$G'))
+print(round(sum((a.get('result') or {}).get('usage',{}).get('cost_usd',0) for a in g['attempts']),2))")
+echo "  spent \$$spent against a \$20 cap"
+
+assert "1. the cap held: nothing was spent past it" "
+assert $spent <= 20, $spent"
+assert "2. a run that passed its cap says OVER by how much, and names both figures" "
+t=open('$T/run.log').read()
+if $spent > 20:
+    assert 'OVER the \$20.00 cap by' in t, t[-600:]
+    assert 'the mean; the dearest actually cost' in t, t[-600:]
+    assert '--reserve-usd' in t, t[-600:]"
+assert "3. it stopped for the money and said how much was spent" "
+t=open('$T/run.log').read()
+assert 'stopped at the \$20.00 budget' in t, t[-500:]"
+assert "4. work was left ready rather than the run running out of graph" "
+t=open('$T/run.log').read()
+import re;m=re.search(r'(\d+) still ready', t)
+assert m and int(m.group(1)) > 0, t[-500:]"
+
+echo "== the operator's dial, when the operator chooses it"
+python3 -c "
+import json;g=json.load(open('$G'));g['attempts']=[];g['graph']='rehearse-budget-strict'
+g['sandbox']['root']='$T/wt3';json.dump(g,open('$T/strict.json','w'),indent=2)"
+node run.mjs "$T/strict.json" --exec "bash $OST/executors/fake.sh" --max-usd 20 --reserve-usd 12 > "$T/strict.log" 2>&1
+sspent=$(python3 -c "
+import json;g=json.load(open('$T/strict.json'))
+print(round(sum((a.get('result') or {}).get('usage',{}).get('cost_usd',0) for a in g['attempts']),2))")
+echo "  with --reserve-usd 12: spent \$$sspent"
+assert "2b. --reserve-usd holds the cap, at the price of leaving work unlaunched" "
+assert $sspent <= 20, $sspent
+import re;t=open('$T/strict.log').read()
+m=re.search(r'(\d+) still ready', t)
+assert m and int(m.group(1)) >= 1, t[-400:]"
+
+echo "== the check decides"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+# w-already: the executor fails, having changed nothing, and the check passes anyway -- the
+# a-0153 case. w-wrong: the executor fails and the check fails too. w-walled: a wall exits
+# non-zero and must stay a wall, never reaching the check.
+g = {"graph": "rehearse-check", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt2", "base": "main", "port_base": 4940},
+     "work": [
+       {"id": "w-already", "what": "already done", "check": "true",
+        "params": {"fake": {"prove": "fail", "usd": 1}}},
+       {"id": "w-wrong", "what": "really wrong", "check": "false",
+        "params": {"fake": {"prove": "fail", "usd": 1}}},
+       {"id": "w-walled", "what": "walls", "check": "true",
+        "params": {"fake": {"prove": "wall", "usd": 1,
+                            "wall_report": {"wall": "needs a thing", "work": [{"id": "w-thing", "what": "the thing"}]}}}},
+     ], "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/check.json", "w"), indent=2)
+PY
+C="$T/check.json"
+node run.mjs "$C" --exec "bash $OST/executors/fake.sh" > "$T/check.log" 2>&1
+
+assert "5. an attempt that changed nothing but whose check passes is done, not failed" "
+import json;g=json.load(open('$C'))
+a=[x for x in g['attempts'] if x['of']=='w-already'][0]
+assert a['state']=='done', a['state']
+assert a['result']['check']['ok'] is True, a['result']"
+assert "6. and the record says whose word it was: the executor said no, the check said yes" "
+import json;g=json.load(open('$C'))
+a=[x for x in g['attempts'] if x['of']=='w-already'][0]
+assert 'the check passed' in a['result']['why'], a['result']['why']"
+assert "7. a failing check still fails the attempt" "
+import json;g=json.load(open('$C'))
+a=[x for x in g['attempts'] if x['of']=='w-wrong'][0]
+assert a['state']=='failed', a['state']
+assert 'check failed' in a['result']['why'], a['result']['why']"
+assert "8. a wall is still a wall and never reaches the check" "
+import json;g=json.load(open('$C'))
+a=[x for x in g['attempts'] if x['of']=='w-walled'][0]
+assert a['state']=='walled', a['state']
+assert 'check' not in a['result'], a['result'].get('check')"
+
+echo ""
+[ "$fails" = 0 ] && echo "  all assertions passed" || echo "  $fails assertion(s) failed"
+exit $((fails > 0))

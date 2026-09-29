@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# A duplicate discovery parks its source too, rehearsed with the fake executor: zero model
+# calls, a throwaway pursuit, every assertion on the record and the run log.
+#
+#   bin/rehearse-duplicate-park  prints one line per assertion, exits non-zero if any fails
+#
+# The defect this is about, found dogfooding 2026-09-18 on a real Muse board (r4): two
+# mappers named the same shared helper. The first mint became a proposal and parked its
+# source; the second joined as a finder, entered nothing into `found`, parked nothing, and
+# its item proved at once -- writing its own copy of the shared module beside the still
+# proposed one. Parking read novelty when it should read what the attempt named.
+#
+# What is rehearsed:
+#   1. the second mapper joins the shared work and edge as a finder with empty `found`
+#   2. both consumers park as mapped, awaiting the operator on the shared ids
+#   3. no prove launches on either consumer before the decision
+#   4. no second verify fires on the duplicate handback
+#   5. confirm unparks both: the shared item proves first, then the consumers, and the
+#      board drains with one shared implementation on the trunk
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-dup-park.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+[ -n "${KEEP:-}" ] && echo "  workspace $T"
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+G="$T/dup.json"
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+# Mapper A sees both consumers and proposes the shared helper with both edges. Mapper B
+# names the same helper and its own edge: both collide and B joins as a finder.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {
+  "graph": "rehearse-dup-park", "concurrency": 1, "max_attempts": 2,
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt", "base": "main", "port_base": 4950},
+  "mapping": {"what": "Find shared needs"},
+  "judge": {"verify": "judge", "default_check": "test -f {id}.txt"},
+  "work": [
+    {"id": "w-a", "what": "first consumer", "needs": [],
+     "params": {"fake": {"map": {
+       "map": {"settles": "a works", "cost": "small"},
+       "work": [{"id": "w-shared", "what": "the shared helper"}],
+       "edges": [{"from": "w-shared", "to": "w-a", "why": "a needs it"},
+                 {"from": "w-shared", "to": "w-b", "why": "b needs it"}]}}}},
+    {"id": "w-b", "what": "second consumer", "needs": [],
+     "params": {"fake": {"map": {
+       "map": {"settles": "b works", "cost": "small"},
+       "work": [{"id": "w-shared", "what": "the shared helper"}],
+       "edges": [{"from": "w-shared", "to": "w-b", "why": "b needs it"}]}}}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(g, open(f"{T}/dup.json", "w"), indent=2)
+PY
+
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" --max-launches 6 > "$T/run1.log" 2>&1
+
+assert "1. the second mapper joins as a finder with empty found" "
+import json; g = json.load(open('$G'))
+b = [a for a in g['attempts'] if a['of'] == 'w-b' and a.get('kind') == 'map'][0]
+assert 'found' not in (b.get('result') or {}), b
+e = [x for x in g['edges'] if x['to'] == 'w-b'][0]
+assert e['found_by'] == ['a-0001', b['id']], e
+w = [x for x in g['work'] if x['id'] == 'w-shared'][0]
+assert b['id'] in w['found_by'], w"
+assert "2. both consumers park as mapped on the shared ids" "
+t = open('$T/run1.log').read()
+assert '2 mapped, awaiting you' in t, t[-600:]
+la = [l for l in t.splitlines() if 'w-a' in l and 'mapped' in l and 'awaiting the operator' in l]
+lb = [l for l in t.splitlines() if 'w-b' in l and 'mapped' in l and 'awaiting the operator' in l]
+assert la and lb, t[-600:]
+assert 'w-shared' in lb[0] and 'e-0002' in lb[0], lb"
+assert "3. no prove launches on either consumer before the decision" "
+import json; g = json.load(open('$G'))
+assert [a for a in g['attempts'] if a.get('kind') == 'prove'] == [], g['attempts']"
+assert "4. no second verify fires on the duplicate handback" "
+import json; g = json.load(open('$G'))
+vs = [a for a in g['attempts'] if a.get('kind') == 'verify']
+assert len(vs) == 1, g['attempts']"
+
+node run.mjs "$G" --confirm w-shared,e-0001,e-0002 > "$T/confirm.log" 2>&1
+node run.mjs "$G" --exec "bash $OST/executors/fake.sh" --max-launches 6 > "$T/run2.log" 2>&1
+
+assert "5. confirm unparks both and the board drains with one shared trunk file" "
+import json, subprocess
+g = json.load(open('$G'))
+assert g['last_run']['drained'] == 'board-satisfied', g['last_run']
+proves = [a for a in g['attempts'] if a.get('kind') == 'prove']
+assert [(a['of'], a['state']) for a in proves] == [('w-shared', 'done'), ('w-a', 'done'), ('w-b', 'done')], proves
+trunk = subprocess.run(['git', '--git-dir', '$T/pursuit/.git', 'ls-tree', '-r', '--name-only',
+                        'ost/rehearse-dup-park/trunk'], capture_output=True, text=True).stdout.split()
+assert 'w-shared.txt' in trunk and 'w-a.txt' in trunk and 'w-b.txt' in trunk, trunk"
+
+[ "$fails" -eq 0 ] || exit 1
+echo "  $((5 - fails))/5 duplicate-park assertions held"

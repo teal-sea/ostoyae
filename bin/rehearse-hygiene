@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Cell hygiene, rehearsed with the fake executor and a stub grok: zero model calls, throwaway
+# pursuits, every assertion on the record and the run log.
+#
+#   bin/rehearse-hygiene        prints one line per assertion, exits non-zero if any fails
+#
+# The defects this is about, found dogfooding 2026-09-18 on an engine checkout as pursuit:
+#   1. contract injection wrote through a symlinked AGENTS.md, destroying the link's target
+#      (.claude/CLAUDE.md) in every cell and committing the wreckage, because the harness
+#      excludes the link's name and not the target's path. A link pointing outside the repo
+#      would have destroyed the operator's own file.
+#   2. cell commits printed git's ignored-path advice about the injected contracts on every
+#      attempt in every run.
+#   3. executors/grok.sh expanded a possibly-empty array under `set -u`, which is fatal on
+#      the system bash 3.2, so any grok cell with OSTOYAE_WEB set died before grok started.
+#   4. the staged-paths enumeration fed git add an empty pathspec file when every changed
+#      path filtered out, and empty input stages the whole worktree, contracts included
+#      (exit 0). Independent review of c93e3f4, reproduced on git 2.50.1.
+#
+# What is rehearsed:
+#   1. a run against a pursuit whose AGENTS.md is a symlink leaves the link's target
+#      byte-identical, and the branch carries the work with the link itself intact
+#   2. a link pointing outside the repo is unlinked, never followed: the outside file is
+#      byte-identical after the run
+#   3. a tracked regular AGENTS.md is still excluded from the branch (existing behavior)
+#   4. the run log carries no ignored-path advice from the harness commit
+#   5. grok.sh with OSTOYAE_WEB set reaches the CLI and records usage (no unbound variable)
+#   6. when enumeration yields no stageable path, commit_work stages nothing and fails
+#      instead of staging the worktree
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-hygiene.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+[ -n "${KEEP:-}" ] && echo "  workspace $T"
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+
+# Pursuit S: AGENTS.md symlinks to docs/real.md inside the repo. Pursuit O: AGENTS.md
+# symlinks to a file outside the repo. Pursuit T: AGENTS.md is a tracked regular file.
+mkdir -p "$T/outside"
+echo "outside file, do not touch" > "$T/outside/victim.md"
+for P in S O TT; do
+  git init -q -b main "$T/pursuit-$P" && (cd "$T/pursuit-$P" && git config user.name r && git config user.email r@x)
+done
+(cd "$T/pursuit-S" && mkdir docs && echo "real instructions" > docs/real.md \
+  && ln -s docs/real.md AGENTS.md && git add -A && git commit -qm start)
+(cd "$T/pursuit-O" && echo hello > README && ln -s "$T/outside/victim.md" AGENTS.md \
+  && git add -A && git commit -qm start)
+(cd "$T/pursuit-TT" && echo "tracked contract" > AGENTS.md && echo hello > README \
+  && git add -A && git commit -qm start)
+
+board() {  # $1 tag  $2 pursuit
+  python3 - "$T" "$1" "$2" <<'PY'
+import json, sys
+T, tag, pursuit = sys.argv[1:]
+g = {"graph": f"rehearse-hygiene-{tag}", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit-{pursuit}", "root": f"{T}/wt-{tag}", "base": "main"},
+     "judge": {"verify": "judge", "default_check": "test -f {id}.txt"},
+     "work": [{"id": "w-x", "what": "write the file", "needs": [],
+               "params": {"fake": {"prove": "done"}}}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/{tag}.json", "w"), indent=2)
+PY
+}
+board S-link S
+board O-outside O
+board TT-tracked TT
+
+node run.mjs "$T/S-link.json" --exec "bash $OST/executors/fake.sh" --max-launches 1 > "$T/run-S.log" 2>&1
+node run.mjs "$T/O-outside.json" --exec "bash $OST/executors/fake.sh" --max-launches 1 > "$T/run-O.log" 2>&1
+node run.mjs "$T/TT-tracked.json" --exec "bash $OST/executors/fake.sh" --max-launches 1 > "$T/run-TT.log" 2>&1
+
+assert "1. a symlinked AGENTS.md keeps its target; the branch carries work, link intact" "
+import json, subprocess
+assert open('$T/pursuit-S/docs/real.md').read() == 'real instructions\n', 'target overwritten'
+g = json.load(open('$T/S-link.json'))
+assert g['attempts'][0]['state'] == 'done', g['attempts']
+b = g['attempts'][0]['sandbox']['branch']
+ls = subprocess.run(['git', '-C', '$T/pursuit-S', 'ls-tree', b], capture_output=True, text=True).stdout
+assert 'w-x.txt' in ls, ls
+entry = subprocess.run(['git', '-C', '$T/pursuit-S', 'ls-tree', b, 'AGENTS.md'], capture_output=True, text=True).stdout
+assert entry.startswith('120000 blob'), entry
+link = subprocess.run(['git', '-C', '$T/pursuit-S', 'show', b + ':AGENTS.md'], capture_output=True, text=True).stdout
+assert link == 'docs/real.md', link"
+assert "2. a link pointing outside the repo is never followed" "
+assert open('$T/outside/victim.md').read() == 'outside file, do not touch\n', 'outside file overwritten'"
+assert "3. a tracked regular AGENTS.md stays out of the branch" "
+import json, subprocess
+g = json.load(open('$T/TT-tracked.json'))
+b = g['attempts'][0]['sandbox']['branch']
+have = subprocess.run(['git', '-C', '$T/pursuit-TT', 'show', b + ':AGENTS.md'], capture_output=True, text=True).stdout
+assert have == 'tracked contract\n', have"
+assert "4. the harness commit prints no ignored-path advice" "
+t = open('$T/run-S.log').read() + open('$T/run-O.log').read() + open('$T/run-TT.log').read()
+assert 'addIgnoredFile' not in t and 'following paths are ignored' not in t, t[-500:]"
+
+# grok.sh under OSTOYAE_WEB with a stub grok: the empty-array path on system bash.
+mkdir -p "$T/gbin"
+cat > "$T/gbin/grok" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p .ostoyae && printf 'stub work\n' > "$OSTOYAE_WORK.txt"
+echo '{"type":"system","subtype":"init","session_id":"s","model":"grok-4.6"}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"ok","stop_reason":"end_turn","total_cost_usd":0.001,"usage":{"input_tokens":100,"output_tokens":10},"modelUsage":{"grok-4.6":{}},"session_id":"s"}'
+EOF
+chmod +x "$T/gbin/grok"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+g = {"graph": "rehearse-hygiene-web", "concurrency": 1, "max_attempts": 1,
+     "sandbox": {"repo": f"{T}/pursuit-TT", "root": f"{T}/wt-web", "base": "main",
+                 "env_passthrough": ["OSTOYAE_WEB"]},
+     "work": [{"id": "w-w", "what": "write the file", "check": "test -f w-w.txt"}],
+     "edges": [], "attempts": []}
+json.dump(g, open(f"{T}/web.json", "w"), indent=2)
+PY
+OSTOYAE_WEB=1 PATH="$T/gbin:$PATH" node run.mjs "$T/web.json" --exec "bash $OST/executors/grok.sh" --max-launches 1 > "$T/run-web.log" 2>&1
+assert "5. grok.sh with OSTOYAE_WEB set reaches the CLI and records usage" "
+import json
+g = json.load(open('$T/web.json'))
+a = g['attempts']
+assert len(a) == 1 and a[0]['state'] == 'done', [(x['state'], x.get('result')) for x in a]
+u = a[0]['result']['usage']
+assert u['executor'] == 'grok' and u['output_tokens'] == 10, u
+assert 'unbound variable' not in open('$T/run-web.log').read()"
+
+# The empty-enumeration trap, against the shipped commit_work verbatim. A git shim fails
+# the two enumeration queries (diff, ls-files) while passing everything else through, so the
+# status gate sees the worktree changes but the path list comes back empty. Without the guard
+# that empty list stages the whole worktree, contracts included.
+git init -q -b main "$T/fixture" && (cd "$T/fixture" && git config user.name r && git config user.email r@x \
+  && echo contract > AGENTS.md && echo work > w.txt && git add -A && git commit -qm start \
+  && echo more >> w.txt && echo hacked >> AGENTS.md)
+sed -n '/^commit_work() {/,/^}$/p' "$OST/executors/claude.sh" > "$T/commit_work.sh"
+mkdir -p "$T/shim" && REALGIT=$(command -v git) && cat > "$T/shim/git" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = diff ] || [ "\$1" = ls-files ]; then exit 128; fi
+exec "$REALGIT" "\$@"
+EOF
+chmod +x "$T/shim/git"
+(cd "$T/fixture" && WHAT=t OSTOYAE_ATTEMPT=a-1 OSTOYAE_WORK=w-x PATH="$T/shim:$PATH" \
+  bash -c 'source "$1"; commit_work ""' _ "$T/commit_work.sh" > "$T/commit.out" 2>&1; echo "exit=$?" > "$T/commit.rc")
+assert "6. commit_work with no stageable path stages nothing and fails" "
+import subprocess
+staged = subprocess.run(['$REALGIT', '-C', '$T/fixture', 'diff', '--cached', '--name-only'], capture_output=True, text=True).stdout
+assert staged == '', repr(staged)
+assert 'exit=1' in open('$T/commit.rc').read(), open('$T/commit.rc').read()"
+
+[ "$fails" -eq 0 ] || exit 1
+echo "  $((6 - fails))/6 hygiene assertions held"

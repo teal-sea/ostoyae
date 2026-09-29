@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# The summary says what the operator acts on next, rehearsed with the fake executor: zero
+# model calls, a throwaway pursuit, every line the summary adds asserted on the record and
+# the run log.
+#
+#   bin/rehearse-summary       prints one line per assertion, exits non-zero if any fails
+#
+# The defects this is about, found dogfooding 2026-09-18:
+#   1. dry claimed "done on the agent's word: no check declared" for boards whose checks are
+#      declared and enforced by go, because a dry run executes no check and the note read an
+#      absent result.check as an absent declaration.
+#   2. a run stopped at its budget printed a failed-once item with retries left as "never ran"
+#      and "waiting ... needs (nothing, never became ready)", sending the operator to ask why
+#      it never launched when the answer was one retry away.
+#   3. a done attempt whose trunk merge conflicted left no line in the summary: the board read
+#      "satisfied" while the trunk was missing finished work.
+#
+# What is rehearsed:
+#   1. dry on a gated board prints "checks declared but not run in dry mode", never "no check
+#      declared", and the board file is untouched
+#   2. dry on an ungated item still prints "done on the agent's word, no check declared"
+#   3. a budget-stopped run prints "1 ready" and "ready w-a 1 attempt in, retries left"
+#   4. a ready item that never launched prints "ready w-b not launched yet"
+#   5. an item on unsatisfied needs still prints "waiting w-c needs w-a"
+#   6. two dones owning one file print "1 done but unmerged, trunk conflict: a-..." while the
+#      board still counts both satisfied, and the trunk holds exactly one of them
+#   7. a real run prints neither "dry mode" nor "never ran"
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-summary.XXXXXX")" && pwd -P)
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+[ -n "${KEEP:-}" ] && echo "  workspace $T"
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+assert() { if python3 -c "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+
+git init -q -b main "$T/pursuit" && (cd "$T/pursuit" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+
+# Board A: one launch spent, one ready, one waiting. Board B: dry labels, one gated item
+# through default_check and one with no check anywhere.
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+a = {
+  "graph": "rehearse-summary-a", "concurrency": 1, "max_attempts": 2,
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-a", "base": "main", "port_base": 4940},
+  "judge": {"verify": "judge", "default_check": "test -f {id}.txt"},
+  "work": [
+    {"id": "w-a", "what": "fails once, retry pending", "needs": [],
+     "params": {"fake": {"prove": "fail"}}},
+    {"id": "w-b", "what": "ready but never launched", "needs": [],
+     "params": {"fake": {"prove": "done"}}},
+    {"id": "w-c", "what": "waits on w-a", "needs": ["w-a"],
+     "params": {"fake": {"prove": "done"}}},
+  ],
+  "edges": [], "attempts": [],
+}
+b = {
+  "graph": "rehearse-summary-b", "concurrency": 1, "max_attempts": 2,
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-b", "base": "main", "port_base": 4941},
+  "judge": {"verify": "judge"},
+  "work": [
+    {"id": "w-gated", "what": "declares a check", "needs": [], "check": "test -f w-gated.txt",
+     "params": {"fake": {"prove": "done"}}},
+    {"id": "w-bare", "what": "declares nothing", "needs": [],
+     "params": {"fake": {"prove": "done"}}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(a, open(f"{T}/a.json", "w"), indent=2)
+json.dump(b, open(f"{T}/b.json", "w"), indent=2)
+PY
+
+node run.mjs "$T/a.json" --exec "bash $OST/executors/fake.sh" --max-launches 1 > "$T/run-a.log" 2>&1
+node run.mjs "$T/b.json" --dry-run > "$T/dry-b.log" 2>&1
+
+assert "1. dry on a gated board names the unrun check, never 'no check declared'" "
+t = open('$T/dry-b.log').read()
+assert 'checks declared but not run in dry mode' in t, t[-800:]
+assert 'no check declared' in t  # the bare item still earns it (assertion 2 reads it too)
+line = [l for l in t.splitlines() if 'checks declared but not run' in l][0]
+assert 'w-gated' in open('$T/b.json').read()  # board file untouched, items unattempted
+import json; g = json.load(open('$T/b.json'))
+assert g['attempts'] == [], g['attempts']"
+assert "2. dry on an ungated item still says 'on the agent\'s word'" "
+t = open('$T/dry-b.log').read()
+line = [l for l in t.splitlines() if \"on the agent's word\" in l]
+assert line, t[-800:]"
+assert "3. a failed-once item reads ready with retries left, not never ran" "
+t = open('$T/run-a.log').read()
+assert '2 ready' in t and '1 waiting' in t and 'never ran' not in t, t[-800:]
+line = [l for l in t.splitlines() if 'w-a' in l and l.strip().startswith('ready')]
+assert line and '1 attempt in, retries left' in line[0], t[-800:]"
+assert "4. a ready item that never launched says so" "
+t = open('$T/run-a.log').read()
+line = [l for l in t.splitlines() if 'w-b' in l and l.strip().startswith('ready')]
+assert line and 'not launched yet' in line[0], t[-800:]"
+assert "5. an item on unsatisfied needs still waits on them by name" "
+t = open('$T/run-a.log').read()
+line = [l for l in t.splitlines() if 'w-c' in l and 'waiting' in l]
+assert line and 'needs w-a' in line[0], t[-800:]"
+
+# Board C: two dones, one file. The custom executor writes shared.txt with per-item content.
+cat > "$T/conflict-exec.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+ATTEMPT=$(cat)
+ID=$(printf '%s' "$ATTEMPT" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+OF=$(printf '%s' "$ATTEMPT" | python3 -c "import json,sys; print(json.load(sys.stdin)['of'])")
+VAL=$(printf '%s' "$ATTEMPT" | python3 -c "import json,sys; print((json.load(sys.stdin).get('params') or {}).get('slot','x'))")
+printf 'content from %s\n' "$VAL" > shared.txt
+git add -A && git -c user.name=c -c user.email=c@x commit -qm "conflict: $OF" || exit 1
+echo "[conflict $ID] prove $OF: wrote shared.txt=$VAL"
+SH
+chmod +x "$T/conflict-exec.sh"
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+c = {
+  "graph": "rehearse-summary-c", "concurrency": 2, "max_attempts": 1,
+  "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-c", "base": "main", "port_base": 4942},
+  "judge": {"verify": "judge", "default_check": "test -f shared.txt # {id}"},
+  "work": [
+    {"id": "w-one", "what": "write shared.txt as one", "needs": [], "params": {"slot": "one"}},
+    {"id": "w-two", "what": "write shared.txt as two", "needs": [], "params": {"slot": "two"}},
+  ],
+  "edges": [], "attempts": [],
+}
+json.dump(c, open(f"{T}/c.json", "w"), indent=2)
+PY
+node run.mjs "$T/c.json" --exec "bash $T/conflict-exec.sh" --max-launches 4 > "$T/run-c.log" 2>&1
+
+assert "6. a conflicted done is satisfied on its branch and named as unmerged" "
+import json, subprocess
+t = open('$T/run-c.log').read()
+line = [l for l in t.splitlines() if 'done but unmerged, trunk conflict' in l]
+assert line and line[0].strip().startswith('1 done but unmerged'), t[-800:]
+g = json.load(open('$T/c.json'))
+assert [a['state'] for a in g['attempts']] == ['done', 'done'], g['attempts']
+loser = [a for a in g['attempts'] if (a.get('result') or {}).get('conflict')]
+assert len(loser) == 1 and loser[0]['id'] in line[0], g['attempts']
+trunk = subprocess.run(['git', '--git-dir', '$T/pursuit/.git', 'show',
+                        'ost/rehearse-summary-c/trunk:shared.txt'],
+                       capture_output=True, text=True).stdout
+assert trunk in ('content from one\n', 'content from two\n'), trunk"
+assert "7. a real run prints neither 'dry mode' nor 'never ran'" "
+t = open('$T/run-a.log').read() + open('$T/run-c.log').read()
+assert 'dry mode' not in t and 'never ran' not in t, t[-800:]"
+
+[ "$fails" -eq 0 ] || exit 1
+echo "  $((7 - fails))/7 summary assertions held"

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Design questions
+    url: https://github.com/teal-sea/ostoyae/blob/main/wiki/open.md
+    about: The undecided design questions are listed here. Read them before proposing a scheduling change.
