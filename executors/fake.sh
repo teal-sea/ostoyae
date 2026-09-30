@@ -37,17 +37,16 @@ import json, os, sys, time
 a = json.loads(sys.argv[1]); n = int(float(sys.argv[2]))
 fake = (a.get("params") or {}).get("fake") or {}
 of, aid, kind = a["of"], a["id"], a.get("kind") or "prove"
-lines = [f"says: reading what the repo has for {of}", "uses Grep: " + of.replace("w-", ""),
-         "uses Read: lean/Frontier/", f"says: thinking about what {of} needs", "uses Bash: lake build 2>&1 | tail -3",
-         f"says: writing down what I have so far", "says: checking the statement once more", "uses Read: .ostoyae/work.json"]
+lines = [f"reading the code for {of}", f"searching the repo for what {of} uses", f"working out what {of} needs",
+         "writing down what I found", "checking it once more"]
 draft = fake.get("map") if kind == "map" else None
 for i in range(n):
-    print(f"[fake {aid}] " + lines[i % len(lines)], flush=True)
+    print(f"[{aid}] " + lines[i % len(lines)], flush=True)
     if i == n // 2 and isinstance(draft, dict):
         os.makedirs(".ostoyae", exist_ok=True)
         partial = {k: v for k, v in draft.items() if k in ("work", "edges", "wall")}
         with open(".ostoyae/report.json", "w") as f: json.dump(partial, f, indent=2)
-        print(f"[fake {aid}] says: wrote a first draft of the report", flush=True)
+        print(f"[{aid}] first draft of the report is written", flush=True)
     time.sleep(1)
 ' "$ATTEMPT" "$SLEEP"
 fi
@@ -61,26 +60,28 @@ a = json.loads(sys.argv[1])
 params = a.get("params") or {}
 fake = params.get("fake") or {}
 of, aid = a["of"], a["id"]
-say = lambda did: print(f"[fake {aid}] verify {of}: {did}", flush=True)
+say = lambda did: print(f"[{aid}] {did}", flush=True)
 if "verify" in fake and fake["verify"] is None:
     say("handed back nothing, exit 1"); sys.exit(1)
 try:
     v = json.load(open(".ostoyae/verify.json"))
 except Exception as e:
     say(f"no verify.json to read ({e}), exit 1"); sys.exit(1)
-ids = [p["id"] for p in v.get("proposals", [])] + ([v["judging"]] if v.get("wall") else [])
+props = v.get("proposals", [])
+names = {p["id"]: (p["from"] + " → " + p["to"] if p.get("kind") == "edge" else p["id"]) for p in props}
+ids = [p["id"] for p in props] + ([v["judging"]] if v.get("wall") else [])
 script = fake.get("verify") or {}
 out = []
 for i in ids:
     s = script.get(i, True)
-    if s is True: out.append({"id": i, "ok": True, "why": "fake: fine"})
-    elif s is False: out.append({"id": i, "ok": False, "why": "fake: no"})
+    if s is True: out.append({"id": i, "ok": True, "why": "needed, and nothing like it exists yet"})
+    elif s is False: out.append({"id": i, "ok": False, "why": "not needed"})
     else: out.append({"id": i, "ok": False, "why": str(s)})
 os.makedirs(".ostoyae", exist_ok=True)
 with open(".ostoyae/report.json", "w") as f:
     json.dump({"verdicts": out}, f, indent=2); f.write("\n")
-word = lambda x: x["id"] + "=" + ("ok" if x["ok"] else "NO")
-say("judged " + ", ".join(map(word, out)))
+word = lambda x: names.get(x["id"], x["id"]) + (" yes" if x["ok"] else " no")
+say("judged " + of + ": " + ", ".join(map(word, out)))
 ' "$ATTEMPT"
   exit $?
 fi
@@ -94,14 +95,14 @@ a = json.loads(sys.argv[1])
 params = a.get("params") or {}
 fake = params.get("fake") or {}
 of, aid = a["of"], a["id"]
-say = lambda did: print(f"[fake {aid}] map {of}: {did}", flush=True)
+say = lambda did: print(f"[{aid}] {did}", flush=True)
 def write(rep):
     os.makedirs(".ostoyae", exist_ok=True)
     with open(".ostoyae/report.json", "w") as f:
         json.dump(rep, f, indent=2); f.write("\n")
 if "map" not in fake:
     write({"map": {"settles": "fake default", "cost": "unknown"}})
-    say("mapped with the default map"); sys.exit(0)
+    say(f"planned {of}"); sys.exit(0)
 m = fake["map"]
 if isinstance(m, list):
     n = int(params.get("attempt") or 1)
@@ -112,12 +113,19 @@ if m == "wall":
     write({"wall": "fake could not map",
            "work": [{"id": f"{of}-needs", "what": f"what {of} needs"}],
            "edges": [{"from": f"{of}-needs", "to": of, "why": "fake"}]})
-    say(f"walled, proposed {of}-needs, exit 1"); sys.exit(1)
+    say(f"blocked: {of} needs something that is not there; proposed {of}-needs"); sys.exit(1)
 if not isinstance(m, dict):
     say(f"params.fake.map is {m!r}, which fake.sh does not understand, exit 1"); sys.exit(1)
 write(m)
 if isinstance(m.get("map"), dict):
-    say("wrote the report as given, with a map"); sys.exit(0)
+    needs = [w["id"] for w in m.get("work", [])]
+    built = [n for n in needs if os.path.exists(n + ".txt")]
+    missing = [n for n in needs if n not in built]
+    tail = ""
+    if missing and not built: tail = ": it needs " + ", ".join(missing) + ", which does not exist yet"
+    elif built and not missing: tail = ": it needs " + ", ".join(built) + ", already built"
+    elif needs: tail = ": " + ", ".join(built) + " is built, " + ", ".join(missing) + " is not"
+    say("planned " + of + tail); sys.exit(0)
 say("wrote the report as given, without a map, exit 1"); sys.exit(1)
 ' "$ATTEMPT"
   exit $?
@@ -152,7 +160,7 @@ case "$ACTION" in
     # 2.47+, which `&&` would turn into a failed commit. fake.sh never needed any of this
     # until a rehearsal pursuit tracked the path. The empty list is guarded like everywhere
     # else: an empty pathspec file stages the whole worktree, contracts included.
-    PATHS=$(mktemp "${TMPDIR:-/tmp}/ostoyae-paths.XXXXXX") || { echo "[fake $ID] prove $OF: commit failed, exit 1"; exit 1; }
+    PATHS=$(mktemp "${TMPDIR:-/tmp}/ostoyae-paths.XXXXXX") || { echo "[$ID] could not commit $OF"; exit 1; }
     {
       git diff --name-only -z HEAD -- . 2>/dev/null
       git ls-files --others --exclude-standard -z -- . 2>/dev/null
@@ -189,8 +197,8 @@ if out:
     git commit -qm "fake: $OF
 
 Attempt: $ID
-Work: $OF" || { echo "[fake $ID] prove $OF: commit failed, exit 1"; exit 1; }
-    echo "[fake $ID] prove $OF: done, wrote $OF.txt and committed"
+Work: $OF" || { echo "[$ID] could not commit $OF"; exit 1; }
+    echo "[$ID] built $OF and committed $OF.txt"
     # The answer, after the commit: the runner reads the report from the worktree, and the
     # branch must not carry it, the same as a real executor's report.
     python3 -c '
@@ -200,19 +208,19 @@ if "answer" in fake:
     os.makedirs(".ostoyae", exist_ok=True)
     with open(".ostoyae/report.json", "w") as f:
         json.dump({"answer": fake["answer"]}, f, indent=2); f.write("\n")
-    print("[fake " + a["id"] + "] prove " + a["of"] + ": handed back answer " + json.dumps(fake["answer"]), flush=True)
+    print("[" + a["id"] + "] answered " + json.dumps(fake["answer"]) + " on " + a["of"], flush=True)
 ' "$ATTEMPT"
     ;;
   wall)
-    echo "[fake $ID] prove $OF: walled, wrote the wall report, exit 1"
+    echo "[$ID] blocked on $OF: something it needs is missing"
     exit 1
     ;;
   fail)
-    echo "[fake $ID] prove $OF: failed, exit 1 with no report"
+    echo "[$ID] failed on $OF, no report"
     exit 1
     ;;
   *)
-    echo "[fake $ID] prove $OF: params.fake.prove is '$ACTION', which fake.sh does not understand, exit 1"
+    echo "[$ID] params.fake.prove is '$ACTION', which the demo agent does not understand"
     exit 1
     ;;
 esac
