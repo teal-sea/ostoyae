@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { readBoard, selectBoard, selfCommand } from './lib/cli-config.mjs';
 import { writeBoard } from './lib/board-write.mjs';
 import { detectCheck } from './lib/check-detect.mjs';
+import { findCycle, showCycle } from './lib/dag.mjs';
 
 const root = import.meta.dirname;
 const cwd = process.env.OSTOYAE_CWD || process.cwd();
@@ -77,6 +78,10 @@ function add(options, positions) {
       used.add(id); ids.push(id);
       board.work.push({ id, what, needs, ...(options.check ? { check: options.check } : {}) });
     }
+    // New items only need items already on the board, so this cannot fire today; it is here so
+    // a later change to how `add` takes needs cannot quietly put a loop on the board.
+    const cycle = findCycle(board);
+    if (cycle?.some(id => ids.includes(id))) fail(`dependency cycle: ${showCycle(cycle)}`);
     return { write: true, ids };
   }).then(result => console.log(`  added ${result.ids.join(', ')}\n  next: ${selfCommand(root)} go ${quote(file)} --invocations 3`));
 }

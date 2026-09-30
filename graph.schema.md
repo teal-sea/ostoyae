@@ -182,6 +182,14 @@ until `from` is satisfied, the same direction as an authored `needs`, so the two
 and only when both endpoints are `active` work, confirming an edge is not a way to sneak a
 proposed work item into the schedule.
 
+**The graph is a DAG.** Authored `needs` plus confirmed edges between `active` work must form a
+directed acyclic graph: no job may wait, directly or through others, on itself. A cycle never
+crashes anything, every job in it just waits forever, so it is refused by name. `ostoyae doctor`
+blocks a board that has one and prints the loop (`dependency cycle: w-a → w-b → w-a`), and `go`
+will not launch it. A yes that would close a cycle (`confirm`, `confirm-scoped`, the judge's
+`--auto-advance`, the viewer) is recorded as a no: the edge or job becomes `rejected`, with
+`rejected_why: "would close a dependency cycle: <path>"`, and the run keeps going.
+
 `found_by` is a list because two attempts can walk into the same wall independently, and that is
 worth knowing.
 

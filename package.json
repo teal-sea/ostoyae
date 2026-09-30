@@ -34,7 +34,7 @@
     "docs/"
   ],
   "scripts": {
-    "test": "node rehearsals/providers.mjs && node rehearsals/process-identity.mjs && node rehearsals/messaging.mjs && node rehearsals/overlap.mjs && node rehearsals/multiple-boards.mjs && node rehearsals/campaign-ownership.mjs && node rehearsals/ingest.mjs && for t in cli land check install onboarding readiness allowance campaign budget claude-usage codex correction crash identity doctor executors gate judge launch-budgets question summary duplicate-park hygiene tools viewer stop; do bash bin/rehearse-$t || exit 1; done && bin/ostoyae demo --no-viewer"
+    "test": "node rehearsals/providers.mjs && node rehearsals/process-identity.mjs && node rehearsals/messaging.mjs && node rehearsals/overlap.mjs && node rehearsals/multiple-boards.mjs && node rehearsals/campaign-ownership.mjs && node rehearsals/ingest.mjs && node rehearsals/dag.mjs && for t in cli land check install onboarding readiness allowance campaign budget claude-usage codex correction crash identity doctor executors gate judge launch-budgets question summary duplicate-park hygiene tools viewer stop; do bash bin/rehearse-$t || exit 1; done && bin/ostoyae demo --no-viewer"
   },
   "repository": {
     "type": "git",

@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { derive, kindOf, decideOn } from './state.mjs';
+import { confirmOn } from '../lib/dag.mjs';
 import { readBoard, resolveExecution, executionSignature, selfCommand } from '../lib/cli-config.mjs';
 import { shellQuote } from '../lib/providers.mjs';
 import { trunkReport } from '../lib/land.mjs';
@@ -366,9 +367,10 @@ async function decide(body) {
         const x = S.lookup(id);
         if (!x) { skipped.push(`${id}: no such job or arrow`); continue; }
         if (S.statusOf(x) !== 'proposed') { skipped.push(`${id}: already ${S.statusOf(x)}`); continue; }
-        decideOn(x, status);
+        // A yes that would close a dependency cycle is recorded as a no, with the loop it makes.
+        if (status === 'confirmed') confirmOn(x, g); else decideOn(x, status);
         x.decided_via = 'viewer';
-        changed.push(`${id}: ${x.status}`);
+        changed.push(`${id}: ${x.status}${x.status !== 'rejected' || status === 'rejected' ? '' : ` (${x.rejected_why})`}`);
       }
     }
     if (changed.length) {

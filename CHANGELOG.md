@@ -11,6 +11,8 @@
 - Hermes Agent executor, and an Ostoyae skill for running boards from Hermes.
 - `ostoyae import github owner/repo`: issues from people with push access become jobs.
 - Compiled Python files are kept out of agent commits.
+- The board is enforced as a DAG: `doctor` blocks a dependency cycle and names its path, and a
+  confirmation that would close one is recorded as rejected with that path.
 
 ## 0.1.0, unreleased
 

@@ -15,6 +15,7 @@ import { readFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { derive } from './viewer/state.mjs';
+import { findCycle, showCycle } from './lib/dag.mjs';
 import { validateParams as validateCodexParams } from './executors/codex.mjs';
 import { cellEnvironment, identifyExecutor, listProviders, findExecutable, executorCommand } from './lib/providers.mjs';
 import { attemptConfigs, selectsAgents } from './lib/attempt-execution.mjs';
@@ -72,6 +73,17 @@ if (g) {
     if (dup.length) bad(`${plane} ids`, `duplicated: ${dup.map(([id, n]) => `${id} x${n}`).join(', ')}`,
         'give each entry its own id; variants of one problem are different work items');
   }
+}
+
+/* a DAG, not a loop */
+
+// Two jobs that each need the other never start: nothing fails, both wait forever. The runner
+// schedules on `needs` plus confirmed edges, and that relation has to be a DAG.
+if (g && Array.isArray(g.work)) {
+  const cycle = findCycle(g);
+  if (cycle) bad('dependencies', `dependency cycle: ${showCycle(cycle)}`,
+    'remove one of those needs (or reject the confirmed edge that makes it); every job in the loop is waiting for another');
+  else ok('dependencies', 'no cycles');
 }
 
 /* the map, when the graph asks for one */

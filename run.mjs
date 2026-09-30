@@ -1499,7 +1499,7 @@ async function main() {
       const was = new Set([...g.work, ...g.edges].filter((x) => statusOf(x) === 'proposed').map((x) => x.id));
       const confirmed = confirmScoped(autoTargets);
       if (confirmed) {
-        const grew = [...g.work, ...g.edges].filter((x) => was.has(x.id) && statusOf(x) !== 'proposed');
+        const grew = [...g.work, ...g.edges].filter((x) => was.has(x.id) && !['proposed', 'rejected'].includes(statusOf(x)));
         const jobs = grew.filter((x) => !isEdgeId(x.id)), links = grew.filter((x) => isEdgeId(x.id));
         console.log(HUMAN ? (jobs.length ? `\n  ${T.paint('1;38;5;179', '▲ The graph grew.')}  ` : `\n  ${T.accent('New link.')}  `) + [
             jobs.length && `new job ${jobs.map((x) => T.paint('1', x.id)).join(', ')}`,

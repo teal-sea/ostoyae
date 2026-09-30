@@ -7,10 +7,12 @@
 
 You give it a list of jobs: bugs, features, issues from your repos. It runs a coding agent (Claude
 Code, Codex and [others](docs/executors.md)) on each one in its own git worktree, in parallel
-where nothing depends on anything, in order where something does. When an agent gets stuck
-because a piece of work is missing, it says so. The missing piece becomes a new job, the stuck
-job waits for it, and nothing is retried into the same wall. A job can carry a check command, and
-its work only counts once the check passes. `ostoyae land` puts the finished work on your branch.
+where nothing depends on anything, in order where something does: the jobs form a DAG (directed
+acyclic graph), and Ostoyae runs it as one. The DAG grows while it runs. When an agent gets stuck
+because a piece of work is missing, it says so; the missing piece is added as a new node, with an
+edge that makes the stuck job wait for it, and nothing is retried into the same wall. A job can
+carry a check command, and its work only counts once the check passes. `ostoyae land` puts the
+finished work on your branch.
 
 No npm dependencies. Node.js 22+, Git, Bash and Python 3. macOS, Linux, any VM or box you can SSH
 into, and Windows through WSL2.
