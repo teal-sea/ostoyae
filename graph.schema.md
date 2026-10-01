@@ -307,7 +307,7 @@ A work item may carry `check`, a shell command. After a prove attempt's executor
 the runner runs it on a fresh checkout of the attempt's branch (see *The judge*), before
 teardown; exit 0 and the attempt is `done`, anything
 else and it is `failed` with the command and its last lines on the record, and the usual retry
-follows, told nothing special — the failure is in `result.why` like any other. It gates only
+follows, told nothing special; the failure is in `result.why` like any other. It gates only
 that one path: a wall still beats everything, a map attempt is judged by its map, and an item
 without `check` behaves exactly as every item did before the field existed.
 
@@ -317,7 +317,7 @@ without `check` behaves exactly as every item did before the field existed.
 
 It exists because of a measured gap: on 2026-08-30 all eleven head-on attempts exited zero,
 "the agent said done" scored 11 for 11, and the real checks scored 8 of 11 on the rows they
-could judge — and because a retry follows a recorded failure, so without an engine-run check a
+could judge, and because a retry follows a recorded failure, so without an engine-run check a
 retry can never fire on work that is wrong. This is the scoped half of `open.md` question 4,
 the run-with-a-mechanical-gate case; scores, reviewers and the open-ended case stay open there.
 
@@ -584,7 +584,7 @@ So the merge is left in progress. The conflicted paths, and any upstreams that c
 merged behind it, are named in a section appended to the cell's contract, and resolving them is
 the attempt's first job. The agent still never runs git: the executor's usual `git add -A && git
 commit` concludes the merge. An agent that judges the collision bigger than the ticket walls on
-it and names both tasks, which is the outcome this repo is for — the collision becomes a task and
+it and names both tasks, which is the outcome this repo is for: the collision becomes a task and
 the dependent parks, instead of an exit code with nothing attached.
 
 ### `sandbox.contract` and `sandbox.notes`, what the cell is told

@@ -192,7 +192,7 @@ Copying only the JSON does not transfer commits or a running process. After movi
 work, update `sandbox.repo`, `sandbox.root` and machine-specific links to their destination
 paths, then run `doctor` and `dry`. Preserve `attempts[]`. Do not use `init --force` to relocate
 a run, because it replaces the board. The `<board>.run.json` heartbeat and
-`<board>.run.json.lock` files beside the board are machine-local; do not copy them — the
+`<board>.run.json.lock` files beside the board are machine-local; do not copy them; the
 next runner claims fresh ones.
 
 Active processes cannot migrate between machines. Process birth records distinguish known
