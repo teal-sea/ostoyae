@@ -28,6 +28,10 @@ import { entries as mailEntries, limits as messageLimits, locked as mailLocked, 
 import { findOverlaps, overlapKey, short } from './lib/overlap.mjs';
 import { serve as serveMailRelay } from './lib/mail-relay.mjs';
 import { terminal, forPerson, showsPlumbing } from './lib/terminal.mjs';
+import {
+  catalogOf as capabilityCatalog, requiresOf, profileOf as capabilityProfile,
+  capabilityBlocks, ensureCapabilities,
+} from './lib/capabilities.mjs';
 
 const argv = process.argv.slice(2);
 function usageFor(a, path) {
@@ -380,8 +384,8 @@ const overBudget = () => spend.overBudget(g, CAPS);
 const absorb = (rep, a) => absorbInto(rep, a, { g, work, ONT, today, edgeId: () => `e-${String(++eseq).padStart(4, '0')}` });
 const decide = (ids, status) => decideWith(ids, status, { g, work, S, REJECT_WHY, today });
 const confirmScoped = (targets = null) => confirmScopedWith(targets, { g, work, S, today, ...(HUMAN && targets ? { say: () => {} } : {}) });
-const classifyDrain = () => classifyDrainOf({ g, S, gateBlocks });
-const report = () => reportOf({ g, S, file, gateBlocks });
+const classifyDrain = () => classifyDrainOf({ g, S, gateBlocks, capabilityBlocks });
+const report = () => reportOf({ g, S, file, gateBlocks, capabilityBlocks });
 const stopRun = () => stopRunWith({ g, file, RUNFILE, NOW });
 const RUN_IDENTITY = captureIdentity(process.pid, { runnerFile: file });
 
@@ -1576,6 +1580,44 @@ async function main() {
         if (limitHit) { stoppedBy = `the plan window: ${limitHit} was rate limited`; break; }
         const bound = overBudget();
         if (bound) { stoppedBy = bound; break; }
+      }
+      // Named runtime capabilities (issue #6): probe under the same sandbox profile the model
+      // shell will use, or honour parent-owned evidence, before spending any model budget.
+      if (!DRY && requiresOf(w).length) {
+        if (capabilityBlocks(w)) continue;
+        // Agent identity for the sandbox profile stamp. A custom --exec script (fake.sh) must
+        // not erase the board's declared provider, or parent evidence under host/fake never matches.
+        const fromExec = EXEC ? identifyExecutor(EXEC).provider : null;
+        const agentHint = (fromExec && fromExec !== 'custom') ? fromExec
+          : (w.params?.agent ?? g.defaults?.agent ?? g.execution?.provider ?? fromExec ?? 'claude');
+        const profile = capabilityProfile({ provider: agentHint, agent: agentHint });
+        const catalog = capabilityCatalog(g);
+        let cwd = process.cwd();
+        if (g.sandbox) {
+          try {
+            ensureTrunk(g.sandbox, g.graph, (m) => plumb(`  ${pad('', 8)} ${pad('trunk', 7)} ${m}`));
+            cwd = trunkPath(g.sandbox, g.graph);
+          } catch (e) {
+            w.capability = {
+              ok: false, state: 'fails', at: today(), profile, requires: requiresOf(w),
+              why: `no trunk for capability probe: ${String(e.message).split('\n')[0]}`,
+              error: [String(e.message).split('\n')[0]],
+            };
+            console.log(`  ${pad('', 8)} ${pad('capability', 10)} ${pad(w.id, 14)} not launched: ${w.capability.why}`);
+            checkpoint();
+            continue;
+          }
+        }
+        const r = ensureCapabilities(w, { g, catalog, profile, cwd, env: process.env, today });
+        if (r && r.state === 'fails') {
+          console.log(`  ${pad('', 8)} ${pad('capability', 10)} ${pad(w.id, 14)} runtime cannot start under ${profile}, not launched: ${String(r.why ?? '').slice(0, 100)}`);
+          checkpoint();
+          continue;
+        }
+        if (stopping) { stoppedBy = stopping; break; }
+        if (limitHit) { stoppedBy = `the plan window: ${limitHit} was rate limited`; break; }
+        const capBound = overBudget();
+        if (capBound) { stoppedBy = capBound; break; }
       }
       const a = spawnAttempt(w);
       launched++;

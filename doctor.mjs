@@ -21,6 +21,7 @@ import { cellEnvironment, identifyExecutor, listProviders, findExecutable, execu
 import { attemptConfigs, selectsAgents } from './lib/attempt-execution.mjs';
 import { canonicalPath } from './lib/process-identity.mjs';
 import { validateEffort, effectiveEffort } from './lib/effort.mjs';
+import { doctorCapabilities } from './lib/capabilities.mjs';
 
 const argv = process.argv.slice(2);
 let file = null, EXEC = null, model = null, effort = null, argumentError = null, json = false;
@@ -288,6 +289,9 @@ for (const rel of g?.sandbox?.link ?? []) {
     ok('link', `${rel} (${size})`);
   }
 }
+
+/* named per-node runtime capabilities (schema only; cell-profile probes run at launch) */
+if (g) doctorCapabilities(g, { ok, warn, bad });
 
 /* the executor, in the real cell environment */
 
