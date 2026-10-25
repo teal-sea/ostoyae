@@ -3,7 +3,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { spawnSync, spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { usageRecord, validateParams, configArgs, guard } from '../executors/codex.mjs';
+import { commitSubject, commitMessage } from '../lib/commit-subject.mjs';
 import { limited, derive, decideOn } from '../viewer/state.mjs';
+import { attemptConfigs } from '../lib/attempt-execution.mjs';
 
 const root = resolve('.'), dir = realpathSync(mkdtempSync('/tmp/rehearse-codex-'));
 const p = { model: 'fixture', codex_pricing: { input: 2, cached_input: 0.2, output: 10 } };
@@ -30,6 +32,27 @@ try {
     assert.doesNotThrow(() => validateParams({ model: 'opus' }));
     assert.throws(() => validateParams({ model: 'fixture', max_turns: 3 }), /no max_turns equivalent/);
     assert.throws(() => validateParams({}), /model explicitly/);
+  });
+  test('harness commit subjects stay bounded and never copy the full prompt', () => {
+    const long = 'Prove the lemma\nwith; metacharacters $(rm -rf /) and `ticks`\n' + 'x'.repeat(400);
+    const a = { id: 'a-0001', of: 'w-one', label: 'Ship the parser', what: long };
+    assert.equal(commitSubject(a), 'Ship the parser');
+    assert.equal(commitSubject({ ...a, label: undefined }), 'w-one');
+    assert(!commitSubject(a).includes('Prove'));
+    assert(!commitMessage(a, 'walled, partial work: ').includes(long.slice(0, 40)));
+    assert.match(commitMessage(a, 'failed, partial work: '), /^failed, partial work: Ship the parser\n\nAttempt: a-0001\nWork: w-one$/);
+    const bare = commitSubject({ id: 'a-2', of: 'w-two', what: long });
+    assert.equal(bare, 'w-two');
+    assert.ok(bare.length <= 72);
+  });
+  test('attemptConfigs skips inert proposed work so doctor does not require its model', () => {
+    const board = { defaults: { agent: 'codex', model: 'gpt-5.6-sol' },
+      work: [{ id: 'w-ready', what: 'ready', params: { model: 'gpt-5.6-sol' } },
+        { id: 'w-prop', what: 'proposed without model', status: 'proposed' }],
+      mapping: null, judge: null };
+    const configs = attemptConfigs(board, 'codex');
+    assert.deepEqual(configs.map(([n]) => n), ['w-ready']);
+    assert.equal(configs[0][1].model, 'gpt-5.6-sol');
   });
   test('the git hook blocks direct, absolute, and compound git invocations', () => {
     for (const command of ['git status', '/usr/bin/git add .', 'pwd && git commit -m x', 'bash -lc "git status"'])
@@ -87,10 +110,41 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1000,cache
       else assert(!git(repo, 'ls-tree', '-r', '--name-only', 'HEAD').includes('AGENTS.md'));
       if (mode === 'done' || mode === 'done-ignored') assert.equal(git(repo, 'show', 'HEAD: leading\nfile.txt'), 'unusual filename');
       assert(!git(repo, 'ls-tree', '-r', '--name-only', 'HEAD').includes('.ostoyae'));
+      if (changed) {
+        const subject = git(repo, 'log', '-1', '--format=%s');
+        assert.ok(subject.length <= 80, subject);
+        assert(!/fixture read|Prove|IGNORE/.test(subject), subject);
+        assert.match(subject, mode === 'wall' ? /^walled, partial work: / : mode === 'failure' ? /^failed, partial work: / : /^(done|w-one)$/);
+      }
       const args = JSON.parse(readFileSync(join(repo, '.ostoyae/args.json')));
       assert(args.some((x) => /ostoyae-codex\./.test(x)));
     });
   }
+  test('a long multiline prompt with a label yields a concise commit subject', () => {
+    const repo = join(dir, 'subject'); mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'rehearsal'); git(repo, 'config', 'user.email', 'rehearsal@example.test');
+    writeFileSync(join(repo, 'README'), 'scratch\n'); git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'start');
+    // Private stub on PATH ahead of the shared fixture: ignores prompt argv, always finishes.
+    const stubBin = join(dir, 'subject-bin'); mkdirSync(stubBin);
+    writeFileSync(join(stubBin, 'codex'), `#!/usr/bin/env node
+const fs=require('node:fs');
+fs.mkdirSync('.ostoyae',{recursive:true});
+fs.writeFileSync('result.txt','ok');
+fs.writeFileSync('.ostoyae/report.json','{}');
+fs.writeFileSync('.ostoyae/args.json',JSON.stringify(process.argv.slice(2)));
+console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:10,cached_input_tokens:0,output_tokens:2}}));
+`, { mode: 0o755 });
+    const what = 'Full task instructions with; metacharacters $(echo hi) and `ticks`\nand a second line\n' + 'z'.repeat(300);
+    const a = { id: 'a-0001', of: 'w-one', label: 'Ship the parser', what, kind: 'prove', params: p };
+    const subjEnv = { ...env, PATH: `${stubBin}:${env.PATH}` };
+    const r = run('bash', [join(root, 'executors/codex.sh')], { cwd: repo, env: subjEnv, input: JSON.stringify(a) });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Ship the parser');
+    const body = git(repo, 'log', '-1', '--format=%b');
+    assert.match(body, /Attempt: a-0001/);
+    assert.match(body, /Work: w-one/);
+    assert(!body.includes('Full task'));
+  });
   test('doctor checks the selected executor without invoking Claude', () => {
     writeFileSync(join(dir, 'bin/claude'), '#!/bin/sh\necho unexpected-Claude >&2\nexit 88\n', { mode: 0o755 });
     const g = { graph: 'doctor-codex', defaults: p, sandbox: { repo: join(dir, 'done'), root: join(dir, 'wt'), base: 'main' }, work: [{ id: 'w', what: 'do' }], edges: [], attempts: [] };
@@ -99,6 +153,64 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1000,cache
     assert.equal(r.status, 0, r.stdout + r.stderr); assert(!r.stdout.includes('unexpected-Claude'));
     const f = run('node', ['doctor.mjs', file, '--exec', `bash ${root}/executors/fake.sh`], { env });
     assert.equal(f.status, 0, f.stdout + f.stderr);
+  });
+  test('doctor does not block ready Codex work on an inert proposal without params.model', () => {
+    // Ready node carries its own model; defaults do not. The inert proposal has neither.
+    const g = { graph: 'doctor-inert', defaults: { agent: 'codex', codex_pricing: p.codex_pricing },
+      sandbox: { repo: join(dir, 'done'), root: join(dir, 'wt-inert'), base: 'main' },
+      work: [{ id: 'w-ready', what: 'ready review', params: { model: 'fixture', effort: 'high' } },
+        { id: 'w-fleet', what: 'proposed without model', status: 'proposed' }],
+      edges: [], attempts: [] };
+    const file = join(dir, 'inert.json'); writeFileSync(file, JSON.stringify(g));
+    const r = run('node', ['doctor.mjs', file, '--exec', `bash ${root}/executors/codex.sh`], { env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /ready to launch/);
+    // Inert proposal may be warned (human tty folds rows); it must never be a FAIL.
+    assert(!/^.*FAIL.*w-fleet/m.test(r.stdout), r.stdout);
+    const blocked = structuredClone(g);
+    delete blocked.work[0].params.model;
+    writeFileSync(file, JSON.stringify(blocked));
+    const bad = run('node', ['doctor.mjs', file, '--exec', `bash ${root}/executors/codex.sh`], { env });
+    assert.equal(bad.status, 1, bad.stdout + bad.stderr);
+    assert.match(bad.stdout, /Codex needs params\.model/);
+  });
+  test('a rejecting commit hook preserves deliverables and reports the commit failure', () => {
+    const repo = join(dir, 'hook-repo'); mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'rehearsal'); git(repo, 'config', 'user.email', 'rehearsal@example.test');
+    writeFileSync(join(repo, 'README'), 'scratch\n');
+    git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'start');
+    const absHook = join(dir, 'deny-commit'); mkdirSync(absHook);
+    writeFileSync(join(absHook, 'pre-commit'), '#!/bin/sh\necho hook-rejected >&2\nexit 1\n', { mode: 0o755 });
+    git(repo, 'config', 'core.hooksPath', absHook);
+    const long = 'Write the specification document with full instructions\n' + 'y'.repeat(200);
+    const file = join(dir, 'hook-board.json');
+    writeFileSync(file, JSON.stringify({ graph: 'hook-fail', concurrency: 1, max_attempts: 1, defaults: p,
+      sandbox: { repo, root: join(dir, 'hook-wt'), base: 'main' },
+      work: [{ id: 'w-spec', label: 'Spec block 5', what: long, check: 'test -s docs/design/SPEC.md' }],
+      edges: [], attempts: [] }));
+    writeFileSync(join(dir, 'bin/codex'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.mkdirSync('docs/design', {recursive:true});
+fs.writeFileSync('docs/design/SPEC.md', 'complete specification\\n');
+fs.mkdirSync('.ostoyae',{recursive:true});
+fs.writeFileSync('.ostoyae/report.json', JSON.stringify({}));
+fs.writeFileSync('.ostoyae/args.json', JSON.stringify(process.argv.slice(2)));
+console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:10,cached_input_tokens:0,output_tokens:2}}));
+`, { mode: 0o755 });
+    const rr = run('node', ['run.mjs', file, '--exec', `bash ${root}/executors/codex.sh`], { env });
+    assert.equal(rr.status, 0, rr.stdout + rr.stderr);
+    const g = JSON.parse(readFileSync(file));
+    assert.equal(g.attempts.length, 1);
+    const a = g.attempts[0];
+    assert.equal(a.state, 'failed');
+    assert.match(a.result.why, /harness git commit failed/i);
+    assert(!/check failed/.test(a.result.why), a.result.why);
+    assert.equal(a.result.commit?.ok, false);
+    const recovery = a.result.recovery || a.sandbox?.recovery;
+    assert(recovery, JSON.stringify(a.result));
+    assert(existsSync(join(recovery, 'docs/design/SPEC.md')), recovery);
+    assert.equal(readFileSync(join(recovery, 'docs/design/SPEC.md'), 'utf8'), 'complete specification\n');
+    assert.equal(a.sandbox.start_commit, a.sandbox.end_commit);
   });
   test('indexed answers agree with live answers after deciding a cloned graph', () => {
     const g = { max_attempts: 2, work: [{id:'w-a',what:'a',status:'proposed'}, {id:'w-b',what:'b'}], edges:[{id:'e-1',from:'w-a',to:'w-b',status:'proposed'}], attempts:[] };

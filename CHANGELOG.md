@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Harness Git commit subjects use the work label or id, not the full task prompt (#7).
+- `doctor` no longer fails the board on inert `proposed` Codex nodes missing `params.model` (#4).
+- Cross-board viewer: a live runner is not reported dead when ownership is ambiguous; prefer
+  unknown, and canonicalize switch URLs (#5).
+- When a cell commit hook rejects, the runner records that failure (not a later missing-file
+  check), preserves uncommitted output under the worktree root's `_recovery/`, and refuses to
+  discard dirty cells without that preserve (#3).
+
 ## 0.2.2, first public release
 
 - One board can mix agents: agent, model and reasoning effort per board, per role (map, verify,

@@ -1,7 +1,7 @@
 // Two boards, one repository, concurrent work and independent browser selections.
 // Real Git worktrees and TCP listeners, scripted executor only. No provider calls.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
@@ -76,6 +76,47 @@ server.listen(Number(process.env.PORT),'127.0.0.1',()=>{
   assert.equal((await get(viewers[0], '/api/graph')).file, join(repo, 'alpha.json'));
   assert.equal((await get(viewers[0], '/api/graph' + betaQuery)).file, join(repo, 'beta.json'));
   pass('switching one browser tab leaves the other tab on its board');
+  // Cross-board liveness: a live runner on B must stay live when A's viewer switches to B.
+  writeFileSync(executor, `import fs from 'node:fs';
+const a=JSON.parse(fs.readFileSync(0,'utf8'));
+await new Promise(r=>setTimeout(r,12000));
+fs.writeFileSync('result.txt',process.env.OSTOYAE_BRANCH+'\\n');
+fs.mkdirSync('.ostoyae',{recursive:true});
+fs.writeFileSync('.ostoyae/usage.json',JSON.stringify({cost_usd:0,output_tokens:0,input_tokens:0}));
+`);
+  for (const file of ['gamma.json', 'delta.json'])
+    ok(run(['init', file, '--exec', `node ${quote(executor)}`, '--item', 'Live switch probe', '--check', 'test -s result.txt']));
+  const live = start(['go', '--board', 'delta.json', '--invocations', '1']);
+  const waitLive = async () => {
+    const until = Date.now() + 10000;
+    while (Date.now() < until) {
+      if (existsSync(join(repo, 'delta.run.json'))) {
+        const st = JSON.parse(ok(run(['status', '--board', 'delta.json', '--json'])));
+        if (st.runner?.state === 'live') return st;
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    throw new Error('delta runner never went live');
+  };
+  const cliLive = await waitLive();
+  const gammaWatch = ok(run(['watch', '--board', 'gamma.json', '--browser', '--control']));
+  const gammaUrl = gammaWatch.match(/http:\/\/localhost:\d+/)[0];
+  viewers.push(gammaUrl);
+  const deltaPath = join(repo, 'delta.json');
+  const sw = await fetch(gammaUrl + '/api/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: deltaPath }) });
+  assert.equal(sw.status, 200);
+  const swBody = await sw.json();
+  const viaSwitch = await get(gammaUrl, '/api/graph?board=' + encodeURIComponent(swBody.file));
+  assert.equal(viaSwitch.runner?.state, 'live', JSON.stringify(viaSwitch.runner));
+  assert.equal(viaSwitch.runner?.pid, cliLive.runner.pid);
+  const viaQuery = await get(gammaUrl, '/api/graph?board=' + encodeURIComponent(deltaPath));
+  assert.equal(viaQuery.runner?.state, 'live');
+  pass('switching to a live board reports the same live runner as the CLI');
+  ok(run(['stop', '--board', 'delta.json', '--now']));
+  await live;
+  const after = await get(gammaUrl, '/api/graph?board=' + encodeURIComponent(deltaPath));
+  assert.ok(['gone', 'none'].includes(after.runner?.state), JSON.stringify(after.runner));
+  pass('a stopped board still reports stopped after the same switch path');
   // Same proposal id, different boards: even a delayed POST must target the chosen board.
   for (const file of ['alpha.json', 'beta.json']) {
     const board = read(file); board.work.push({ id: 'shared-id', what: `Proposal for ${file}`, status: 'proposed' });

@@ -10,8 +10,8 @@
 // Two workers each reading a log, seeing #8 and taking #9 is a real thing that happened.
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, lstatSync, unlinkSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, lstatSync, unlinkSync, realpathSync, cpSync, readdirSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();
@@ -458,7 +458,59 @@ export function checkTree(cfg, graph, attempt, log = () => {}) {
 
 /* ------------------------------------------------------------- teardown */
 
-export function teardown(made, cfg, log = () => {}) {
+/** Uncommitted paths in a cell (tracked changes and untracked files), excluding injected contracts. */
+export function dirtyPaths(worktree) {
+  if (!worktree || !existsSync(worktree)) return [];
+  try {
+    const out = git(['-C', worktree, 'status', '--porcelain', '-uall', '--', '.']);
+    return out.split('\n').map((line) => line.trimEnd()).filter(Boolean)
+      .map((line) => line.slice(3).replace(/^"(.*)"$/, '$1').split(' -> ').pop())
+      .filter((p) => p && !['AGENTS.md', 'CLAUDE.md'].includes(p) && !p.startsWith('.ostoyae/') && p !== '.ostoyae');
+  } catch { return ['?']; }
+}
+
+/**
+ * Copy uncommitted cell output (and the handback) to a durable recovery tree before force-remove.
+ * Returns the recovery directory, or null when there was nothing to keep.
+ */
+export function preserveCell(made, cfg, attempt, log = () => {}) {
+  if (!made?.worktree || !existsSync(made.worktree)) return null;
+  const dirty = dirtyPaths(made.worktree);
+  const report = join(made.worktree, '.ostoyae', 'report.json');
+  const usage = join(made.worktree, '.ostoyae', 'usage.json');
+  const keepReport = existsSync(report);
+  const keepUsage = existsSync(usage);
+  if (!dirty.length && !keepReport && !keepUsage) return null;
+  const root = resolve(cfg.root ?? join(resolve(cfg.repo), '..', 'ostoyae-worktrees'));
+  const dest = join(root, '_recovery', attempt.id);
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  for (const rel of dirty) {
+    if (rel === '?') continue;
+    const from = join(made.worktree, rel);
+    if (!existsSync(from)) continue;
+    const to = join(dest, rel);
+    mkdirSync(dirname(to), { recursive: true });
+    cpSync(from, to, { recursive: true });
+  }
+  if (keepReport || keepUsage) {
+    mkdirSync(join(dest, '.ostoyae'), { recursive: true });
+    if (keepReport) cpSync(report, join(dest, '.ostoyae', 'report.json'));
+    if (keepUsage) cpSync(usage, join(dest, '.ostoyae', 'usage.json'));
+  }
+  writeFileSync(join(dest, '.ostoyae-recovery.json'), JSON.stringify({
+    attempt: attempt.id, work: attempt.of, preserved_at: new Date().toISOString(),
+    worktree: made.worktree, branch: made.branch ?? attempt.sandbox?.branch ?? null,
+    paths: dirty.filter((p) => p !== '?'),
+  }, null, 2) + '\n');
+  // Refuse to claim success if the destination is empty of the files we meant to keep.
+  const kept = readdirSync(dest);
+  if (!kept.length) throw new Error(`recovery at ${dest} is empty after copy`);
+  log(`preserved uncommitted cell output at ${dest}`);
+  return dest;
+}
+
+export function teardown(made, cfg, log = () => {}, { recovery = null, allowDirty = false } = {}) {
   // Unlink the shared caches FIRST, before anything is allowed to delete this directory. The
   // links point at the pursuit repo's real `.lake` and `node_modules`; a teardown that removed
   // the tree while they were still in it would be one buggy `rm -r` away from deleting the
@@ -475,8 +527,12 @@ export function teardown(made, cfg, log = () => {}) {
   }
 
   // Environments are disposable. Records are not. The branch survives so a failed attempt's
-  // work can still be read; the worktree and the database do not.
+  // committed work can still be read; uncommitted work must be preserved before force-remove.
   if (made.worktree && existsSync(made.worktree)) {
+    const dirty = dirtyPaths(made.worktree);
+    if (dirty.length && !allowDirty && !recovery) {
+      throw new Error(`refusing to discard uncommitted cell output (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''}); preserve first`);
+    }
     try {
       git(['-C', resolve(cfg.repo), 'worktree', 'remove', '--force', made.worktree]);
       log(`removed worktree ${made.worktree}`);

@@ -13,7 +13,7 @@ import { confirmOn } from '../lib/dag.mjs';
 import { readBoard, resolveExecution, executionSignature, selfCommand } from '../lib/cli-config.mjs';
 import { shellQuote } from '../lib/providers.mjs';
 import { trunkReport } from '../lib/land.mjs';
-import { processOwner, captureIdentity, canonicalPath } from '../lib/process-identity.mjs';
+import { processOwner, captureIdentity, canonicalPath, inspectProcess, identityMatches, sameFile } from '../lib/process-identity.mjs';
 import { claimRunLock, liveLockHolder, lockClaimant, lockPathOf, removeLock, removeOwnRunfile, holderDoing } from '../lib/liveness.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -130,14 +130,23 @@ function runner() {
   if (!Number.isSafeInteger(r.pid) || r.pid <= 0) return { state: 'unknown', error: 'runner heartbeat has no valid PID' };
   const base = { pid: r.pid, since: r.started ?? null, beat: r.beat ?? null, role: r.role ?? null,
                  launched: r.launched ?? null, budget: r.budget ?? null, budgets: r.budgets ?? null };
-  const owner = processOwner(r.pid, { identity: r.identity, runnerFile: current() });
-  if (owner === null) return { ...base, state: 'unknown' };
-  if (!owner) return { ...base, state: 'gone' };
-  // A process that is up but has stopped beating is wedged, which is not the same as working and
-  // is the case an operator most needs told. The beat is every 2s; 15s is not a slow one.
   const age = Date.now() - Date.parse(r.beat ?? 0);
   if (!Number.isFinite(age)) return { ...base, state: 'unknown', error: 'runner heartbeat has no valid timestamp' };
-  return { ...base, state: age > 15000 ? 'wedged' : 'live' };
+  const info = inspectProcess(r.pid);
+  const owner = processOwner(r.pid, { identity: r.identity, runnerFile: current() });
+  if (owner === true) return { ...base, state: age > 15000 ? 'wedged' : 'live' };
+  // Birth identity matches and this board's heartbeat names the same file: treat path-glitch
+  // ownership misses as live/wedged, never as death (cross-board viewer, issue #5).
+  if (info.status === 'alive' && r.identity && identityMatches(r.identity, info)) {
+    const claimed = r.file ?? r.identity.runner_file;
+    if (claimed && sameFile(claimed, current()))
+      return { ...base, state: age > 15000 ? 'wedged' : 'live' };
+    return { ...base, state: 'unknown', error: 'runner process is alive but board ownership could not be verified' };
+  }
+  if (owner === null || info.status === 'unknown') return { ...base, state: 'unknown' };
+  // A process that is up but has stopped beating is wedged, which is not the same as working and
+  // is the case an operator most needs told. The beat is every 2s; 15s is not a slow one.
+  return { ...base, state: 'gone' };
 }
 
 // The graph is re-read per request rather than cached. A run rewrites the file underneath us and
@@ -386,8 +395,8 @@ async function decide(body) {
 // the record and the viewer only ever pointed at it.
 function switchTo(path) {
   if (typeof path !== 'string') return { status: 400, error: 'not a board this viewer knows' };
-  const p = resolve(path);
-  if (!boards().some((b) => !b.error && canonical(b.path) === canonical(p))) return { status: 400, error: 'not a board this viewer knows' };
+  const p = canonical(path);
+  if (!boards().some((b) => !b.error && canonical(b.path) === p)) return { status: 400, error: 'not a board this viewer knows' };
   if (!existsSync(p)) return { status: 400, error: 'no such file' };
   return { status: 200, ok: true, file: p, url: `/?board=${encodeURIComponent(p)}` };
 }

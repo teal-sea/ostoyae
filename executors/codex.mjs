@@ -13,6 +13,12 @@ const quote = (s) => "'" + String(s).replaceAll("'", "'\\''") + "'";
 const toml = (x) => Array.isArray(x) ? `[${x.map(toml).join(',')}]`
   : object(x) ? `{${Object.entries(x).map(([k, v]) => `${JSON.stringify(k)}=${toml(v)}`).join(',')}}`
   : JSON.stringify(x);
+// Inlined (this file is copied alone into the cell): prefer label/id, never the full prompt.
+const commitMessage = (a = {}, prefix = '') => {
+  let body = String(a.label ?? a.of ?? '').trim().replace(/\s+/g, ' ') || String(a.of ?? 'work');
+  if (body.length > 72) body = `${body.slice(0, 71).trimEnd()}…`;
+  return `${prefix}${body}\n\nAttempt: ${a.id ?? '?'}\nWork: ${a.of ?? '?'}`;
+};
 
 export function validateParams(p = {}) {
   if (typeof p.model !== 'string' || !p.model.trim()) throw Error('Codex needs params.model explicitly');
@@ -151,7 +157,7 @@ async function execute(a) {
       for (const path of ['AGENTS.md', 'CLAUDE.md', '.ostoyae'])
         spawnSync('git', ['restore', '--staged', '--quiet', '--', path], { stdio: 'ignore' });
       const prefix = report?.wall ? 'walled, partial work: ' : code || agentError ? 'failed, partial work: ' : '';
-      git(['commit', '-qm', `${prefix}${a.what || a.of}\n\nAttempt: ${a.id}\nWork: ${a.of}`]);
+      git(['commit', '-qm', commitMessage(a, prefix)]);
       say(`[cell ${a.id}] harness committed ${git(['rev-parse', '--short', 'HEAD'])}`);
       changed = true;
     }

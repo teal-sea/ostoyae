@@ -399,6 +399,15 @@ for (const [configName, agent, command] of commands) if (env) {
         if (!params.codex_pricing) warn('Codex cost', `${name}: no params.codex_pricing; tokens will be recorded, dollar cost unknown`);
       } catch (e) { bad('Codex params', `${name}: ${e.message}`, 'adapt the graph parameters before launching Codex'); }
     }
+    // Inert proposals are not launched. Missing model on them is a warning until confirmed, not a board-wide FAIL.
+    for (const w of g.work ?? []) {
+      if (w.status !== 'proposed') continue;
+      const agent = w.params?.agent ?? g.defaults?.agent ?? identified.provider;
+      if (agent !== 'codex') continue;
+      const model = w.params?.model ?? g.defaults?.model;
+      if (typeof model === 'string' && model.trim()) continue;
+      warn('Codex params', `${w.id}: proposed, no params.model yet; configure before confirming. Does not block ready work`);
+    }
     warn('Codex config', 'the adapter excludes user config to preserve cell permissions; custom backends require a custom executor or another provider adapter');
   }
 }

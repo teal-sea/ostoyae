@@ -8,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { provision, teardown, ensureTrunk, integrate, trunkOf, trunkPath, checkTree } from './sandbox.mjs';
+import { provision, teardown, preserveCell, dirtyPaths, ensureTrunk, integrate, trunkOf, trunkPath, checkTree } from './sandbox.mjs';
 import { derive, kindOf, LIMIT_RE } from './viewer/state.mjs';
 import { fill, claimHash } from './lib/claims.mjs';
 import { wallNamesNothing } from './lib/wall.mjs';
@@ -649,6 +649,8 @@ function spawnAttempt(w, kind = nextKind(w.id), judging = null) {
     kind,
     ...(judging ? { judges: judging.id } : {}),
     what: whatFor(w, kind, judging),
+    // Bounded label for harness Git subjects; full instructions stay in `what` / the record.
+    ...(typeof w.label === 'string' && w.label.trim() ? { label: w.label.trim() } : {}),
     from,
     state: 'running',
     params: {
@@ -963,6 +965,13 @@ async function runAttempt(a) {
     if (!exec.ok && (exec.tail ?? []).some((l) => LIMIT_RE.test(String(l)))) {
       return { ...exec, report: handback, usage: usageFor(a, cell.path) };
     }
+    // A rejecting commit hook leaves the branch unchanged. Do not run the check on that tip and
+    // replace the commit error with a missing-file result (issue #3).
+    const commitFailed = (exec.tail ?? []).some((l) => /harness (?:git )?commit failed|could not commit/i.test(String(l)));
+    if (commitFailed) {
+      const line = (exec.tail ?? []).find((l) => /harness (?:git )?commit failed|could not commit/i.test(String(l)));
+      return { ok: false, why: String(line), commit: { ok: false }, report: handback, usage: usageFor(a, cell.path), tail: exec.tail };
+    }
     // Run the check even when an agent exits nonzero: it may have found the requested state already true.
     if (kindOf(a) === 'prove' && checkOf(work.get(a.of)) && !handback?.wall) {
       const cmd = checkOf(work.get(a.of));
@@ -994,8 +1003,24 @@ async function runAttempt(a) {
     if (!pendingCell) snapshotEnd(a, cell.path);
     // Keep a cell killed by `stop --now` so its partial work can be inspected.
     if (!KEEP && !hardStop && !pendingCell) {
-      try { teardown(cell.made, g.sandbox, (m) => plumb(`  ${pad(a.id, 8)} ${pad('cell', 7)} ${m}`)); }
-      catch (e) { console.log(`  ${pad(a.id, 8)} ${pad('cell', 7)} teardown failed: ${e.message}`); }
+      const log = (m) => plumb(`  ${pad(a.id, 8)} ${pad('cell', 7)} ${m}`);
+      let recovery = null;
+      const dirty = dirtyPaths(cell.made?.worktree);
+      const branchUnchanged = a.sandbox?.start_commit && a.sandbox?.end_commit
+        && a.sandbox.start_commit === a.sandbox.end_commit;
+      if (dirty.length && branchUnchanged) {
+        try {
+          recovery = preserveCell(cell.made, g.sandbox, a, log);
+          if (recovery) a.sandbox.recovery = recovery;
+        } catch (e) {
+          console.log(`  ${pad(a.id, 8)} ${pad('cell', 7)} preserve failed: ${e.message}; worktree kept`);
+          a.sandbox.recovery_error = e.message;
+        }
+      }
+      if (!(dirty.length && branchUnchanged && !recovery && a.sandbox.recovery_error)) {
+        try { teardown(cell.made, g.sandbox, log, { recovery, allowDirty: !dirty.length || !!recovery || !branchUnchanged }); }
+        catch (e) { console.log(`  ${pad(a.id, 8)} ${pad('cell', 7)} teardown failed: ${e.message}`); }
+      }
     }
   }
 }
@@ -1106,6 +1131,9 @@ function settle(a, w, r) {
   // Whether the engine verified the work, on the record beside the outcome. Absent means the
   // item declared no check, which is how every graph behaved before checks existed.
   if (r.check) a.result.check = r.check;
+  if (r.commit) a.result.commit = r.commit;
+  if (a.sandbox?.recovery) a.result.recovery = a.sandbox.recovery;
+  if (a.sandbox?.recovery_error) a.result.recovery_error = a.sandbox.recovery_error;
 
   // What the executor said before it died. Kept only when there is no wall to explain the
   // outcome, because a walled attempt already said what stopped it in its own words and this
