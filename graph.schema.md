@@ -605,6 +605,22 @@ silently substitute an output-token budget or inherit a Claude model name.
 "link": ["lean/.lake/packages", "node_modules"]
 ```
 
+An entry may also be an object when presence or a probe must block launch:
+
+```json
+"link": [
+  { "path": "node_modules", "required": true, "probe": "test -x node_modules/.bin/tsc" }
+],
+"preflight": [
+  { "cmd": "npx tsc --noEmit --pretty false", "what": "commit hooks can typecheck" }
+]
+```
+
+`required: true` makes a missing cache a doctor FAIL (and a provision failure) instead of a skip.
+`probe` and `sandbox.preflight` run in the pursuit (doctor) and again in the cell after links are
+in place, before any model process starts. They never install packages, never bypass hooks, and
+never print environment values. A failed probe consumes zero model invocations.
+
 A cell is a bare worktree, so it arrives with no `.lake`, no `node_modules`, no `.venv`. For a
 compiled pursuit that is fatal rather than inconvenient: **Mathlib's build is 1.8 GB**, an agent
 cannot produce it inside a cell, and thirty cells cannot each hold one. `link` symlinks each

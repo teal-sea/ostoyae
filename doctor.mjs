@@ -21,6 +21,8 @@ import { cellEnvironment, identifyExecutor, listProviders, findExecutable, execu
 import { attemptConfigs, selectsAgents } from './lib/attempt-execution.mjs';
 import { canonicalPath } from './lib/process-identity.mjs';
 import { validateEffort, effectiveEffort } from './lib/effort.mjs';
+import { linkEntries, preflightEntries } from './lib/sandbox-link.mjs';
+import { runPreflight } from './sandbox.mjs';
 
 const argv = process.argv.slice(2);
 let file = null, EXEC = null, model = null, effort = null, argumentError = null, json = false;
@@ -280,12 +282,40 @@ for (const t of g?.sandbox?.tools ?? []) {
     ok('tool answers', `${cmd}${first ? `: ${first}` : ''}`);
   }
 }
-for (const rel of g?.sandbox?.link ?? []) {
-  const target = join(repo ?? '', rel);
-  if (!existsSync(target)) warn('link', `${rel} not present in the pursuit, cells will start without it`);
-  else {
-    const size = (() => { try { return statSync(target).isDirectory() ? 'dir' : 'file'; } catch { return '?'; } })();
-    ok('link', `${rel} (${size})`);
+try {
+  for (const entry of linkEntries(g?.sandbox?.link)) {
+    const target = join(repo ?? '', entry.path);
+    if (!existsSync(target)) {
+      if (entry.required) bad('link', `required ${entry.path} not present in the pursuit`,
+        'install or build that cache before launching; cells cannot invent it');
+      else warn('link', `${entry.path} not present in the pursuit, cells will start without it`);
+    } else {
+      const size = (() => { try { return statSync(target).isDirectory() ? 'dir' : 'file'; } catch { return '?'; } })();
+      ok('link', `${entry.path} (${size})${entry.required ? ', required' : ''}`);
+    }
+  }
+  for (const entry of preflightEntries(g?.sandbox?.preflight)) {
+    // Presence of the declaration is checked here; the probe itself runs below once the
+    // pursuit root is known, so a missing compiler is visible before any model launch.
+    if (!entry.what) warn('preflight', `\`${entry.cmd}\` has no \`what\`; say what preparation it proves`);
+  }
+} catch (e) { bad('link', e.message, 'sandbox.link entries are path strings or { path, required?, probe? }'); }
+
+if (repo && g?.sandbox) {
+  let needPreflight = false;
+  try { needPreflight = linkEntries(g.sandbox.link).some((e) => e.probe) || (g.sandbox.preflight ?? []).length > 0; }
+  catch { /* malformed link already reported above */ }
+  if (needPreflight) {
+    try {
+      const results = runPreflight(repo, g.sandbox);
+      for (const r of results) {
+        const name = r.kind === 'link' ? `link probe ${r.path}` : 'preflight';
+        const label = r.kind === 'link' ? r.probe : r.cmd;
+        if (r.ok) ok(name, `${label}${r.detail ? `: ${r.detail}` : ''}${r.what ? `  ${r.what}` : ''}`);
+        else bad(name, `${label}: ${r.error ?? `exit ${r.status}`}${r.detail ? `: ${r.detail}` : ''}`,
+          'fix the declared preparation before launching; no model call made');
+      }
+    } catch (e) { bad('preflight', e.message, 'sandbox.preflight entries are { cmd, what? }'); }
   }
 }
 

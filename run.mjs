@@ -8,7 +8,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { provision, teardown, preserveCell, dirtyPaths, ensureTrunk, integrate, trunkOf, trunkPath, checkTree } from './sandbox.mjs';
+import { provision, teardown, preserveCell, dirtyPaths, ensureTrunk, integrate, trunkOf, trunkPath, checkTree, runPreflight } from './sandbox.mjs';
+import { linkPaths } from './lib/sandbox-link.mjs';
 import { derive, kindOf, LIMIT_RE } from './viewer/state.mjs';
 import { fill, claimHash } from './lib/claims.mjs';
 import { wallNamesNothing } from './lib/wall.mjs';
@@ -501,7 +502,7 @@ async function sweep(prev) {
     const cell = { path, env: { OSTOYAE_ATTEMPT: a.id, OSTOYAE_WORK: a.of, OSTOYAE_BRANCH: a.sandbox.branch,
                                 OSTOYAE_WORKTREE: path, PORT: String(a.sandbox.port) },
                    made: { worktree: path, branch: a.sandbox.branch, db: null,
-                           links: (g.sandbox.link ?? []).map((l) => join(path, l)) } };
+                           links: linkPaths(g.sandbox.link).map((l) => join(path, l)) } };
     const why = `recovered: ${who} exited before this attempt settled; handback read from the cell`;
     let r = { ok: true, why, report, usage: usageFor(a, path), tail: [] };
     if (kindOf(a) === 'prove' && checkOf(w)) {
@@ -799,6 +800,18 @@ async function runAttempt(a) {
     // A merge left for the agent is not represented by HEAD alone. Exclude such
     // starts from commit-diff attribution instead of crediting inherited work.
     if (cell.made.conflicts?.length) a.sandbox.start_conflicts = cell.made.conflicts;
+    // Declared preparation (required links / preflight probes) before any model process starts.
+    const prep = runPreflight(cell.path, g.sandbox, (m) => plumb(`  ${pad(a.id, 8)} ${pad('prep', 7)} ${m}`));
+    const failedPrep = prep.find((r) => !r.ok);
+    if (failedPrep) {
+      const label = failedPrep.kind === 'link' ? `link ${failedPrep.path} probe` : 'preflight';
+      const cmd = failedPrep.probe ?? failedPrep.cmd;
+      if (portLease) await portLease.release();
+      try { teardown(cell.made, g.sandbox, (m) => plumb(`  ${pad(a.id, 8)} ${pad('cell', 7)} ${m}`), { allowDirty: true }); }
+      catch (e) { console.log(`  ${pad(a.id, 8)} ${pad('cell', 7)} teardown failed: ${e.message}`); }
+      return { ok: false, why: `preflight failed (${label}): ${cmd}: ${failedPrep.error ?? `exit ${failedPrep.status}`}${failedPrep.detail ? `: ${failedPrep.detail}` : ''}`,
+        preflight: { ok: false, results: prep } };
+    }
     checkpoint();
   } catch (e) {
     if (portLease) await portLease.release();
@@ -1132,6 +1145,7 @@ function settle(a, w, r) {
   // item declared no check, which is how every graph behaved before checks existed.
   if (r.check) a.result.check = r.check;
   if (r.commit) a.result.commit = r.commit;
+  if (r.preflight) a.result.preflight = r.preflight;
   if (a.sandbox?.recovery) a.result.recovery = a.sandbox.recovery;
   if (a.sandbox?.recovery_error) a.result.recovery_error = a.sandbox.recovery_error;
 

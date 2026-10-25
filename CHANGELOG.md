@@ -9,6 +9,9 @@
 - When a cell commit hook rejects, the runner records that failure (not a later missing-file
   check), preserves uncommitted output under the worktree root's `_recovery/`, and refuses to
   discard dirty cells without that preserve (#3).
+- `sandbox.link` may mark entries `required` with an optional `probe`, and `sandbox.preflight`
+  declares preparation checks shared by doctor and cell provisioning. Failed probes block
+  before any model launch (#2).
 
 ## 0.2.2, first public release
 
