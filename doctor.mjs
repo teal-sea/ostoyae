@@ -459,17 +459,26 @@ function opencodeModels(provider, stored, pins) {
       'no model pinned: the first attempt uses the account default model. Pin an exact one, e.g. --model opencode-go/glm-5.3-flash (variants append #effort and are not registry-checked)');
     return;
   }
-  const owners = (pin) => pin.includes('/')
-    ? (listed.includes(pin) ? [pin] : [])
-    : [...new Set(listed.filter((id) => id.endsWith(`/${pin}`)))];
+  const owners = (id) => id.includes('/')
+    ? (listed.includes(id) ? [id] : [])
+    : [...new Set(listed.filter((x) => x.endsWith(`/${id}`)))];
   for (const pin of [...new Set(pins)]) {
-    const where = owners(pin);
-    if (where.length === 1 && where[0] === pin) ok('model pin', `${pin} is in the CLI's model listing (registry-checked existence only, not access)`);
+    // OpenCode accepts `provider/model#effort`, but `opencode models` lists the model
+    // without the variant, so only the base id can be registry-checked. The variant is
+    // the client's business: it is validated there, not against this listing.
+    const hash = pin.indexOf('#');
+    const both = hash > 0;
+    const base = both ? pin.slice(0, hash) : pin;
+    const variant = both ? pin.slice(hash + 1) : '';
+    const suffix = variant ? `; #${variant} is client-validated, not registry-checked` : '';
+    const where = owners(base);
+    if (where.length === 1 && where[0] === base) ok('model pin',
+      `${pin}${both ? `: base ${base}` : ''} is in the CLI's model listing (registry-checked existence only, not access)${suffix}`);
     else if (where.length === 1) ok('model pin',
-      `bare ${pin} resolves to ${where[0]}; pin that exactly. ${stored.includes(where[0].split('/')[0]) ? '' : 'no stored credential names that provider lane'}`);
+      `bare ${pin} resolves to ${where[0]}${variant ? `#${variant}` : ''}; pin that exactly. ${stored.includes(where[0].split('/')[0]) ? '' : 'no stored credential names that provider lane'}`);
     else if (where.length > 1) warn('model pin',
       `bare ${pin} matches ${where.slice(0, 4).join(', ')}${where.length > 4 ? ', …' : ''}; different providers are different billing lanes, so pin provider/${pin} to choose`);
-    else bad('model pin', `${pin} is not in the CLI's model listing; the client would refuse it on the first attempt`,
+    else bad('model pin', `${pin}${both ? ` (base ${base})` : ''} is not in the CLI's model listing; the client would refuse it on the first attempt`,
       `pick one from ${provider.cli} models`);
   }
 }
