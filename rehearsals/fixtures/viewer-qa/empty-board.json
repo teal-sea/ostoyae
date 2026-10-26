@@ -1,0 +1,8 @@
+{
+  "graph": "qa-empty-board",
+  "concurrency": 1,
+  "max_attempts": 2,
+  "work": [],
+  "edges": [],
+  "attempts": []
+}

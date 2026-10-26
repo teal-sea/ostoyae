@@ -1,0 +1,135 @@
+{
+  "graph": "qa-small-meaningful",
+  "concurrency": 1,
+  "max_attempts": 2,
+  "work": [
+    {
+      "id": "w-harness",
+      "label": "Set up the parser test harness",
+      "what": "add a fixture-driven test harness for the markdown table parser",
+      "needs": []
+    },
+    {
+      "id": "w-normalize",
+      "label": "Normalize escaped pipes in tables",
+      "what": "make the parser treat escaped pipes inside table cells as literals",
+      "needs": ["w-harness"]
+    },
+    {
+      "id": "w-nested",
+      "label": "Fix nested list indentation drift",
+      "what": "nested lists deeper than three levels lose their indentation after round-trip",
+      "needs": []
+    },
+    {
+      "id": "w-release",
+      "label": "Cut the 0.3 changelog",
+      "what": "write the changelog section for the 0.3 release from merged commits",
+      "needs": ["w-normalize"]
+    },
+    {
+      "id": "w-docs",
+      "label": "Update the format guide",
+      "what": "document the escaped-pipe rule in docs/format-guide.md",
+      "needs": ["w-nested"]
+    },
+    {
+      "id": "w-p-slug",
+      "status": "proposed",
+      "label": "Add a heading anchor slug helper",
+      "what": "the nested-list fix needs a slug helper shared by heading and list anchors; an agent suggested adding it first",
+      "found_by": ["a-0003"],
+      "found_at": "2026-10-25T09:40:00.000Z"
+    },
+    {
+      "id": "w-perf",
+      "status": "rejected",
+      "label": "Rewrite the tokenizer in Rust",
+      "what": "replace the tokenizer core with a Rust port for speed",
+      "found_by": ["a-0003"],
+      "found_at": "2026-10-25T09:40:00.000Z"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-0001",
+      "from": "w-p-slug",
+      "to": "w-nested",
+      "status": "proposed",
+      "why": "the wall names the missing slug helper as a prerequisite",
+      "found_by": ["a-0003"],
+      "found_at": "2026-10-25T09:40:00.000Z"
+    },
+    {
+      "id": "e-0002",
+      "from": "w-harness",
+      "to": "w-normalize",
+      "status": "confirmed",
+      "why": "the normalize fix needs harness fixtures to prove it"
+    },
+    {
+      "id": "e-0003",
+      "from": "w-docs",
+      "to": "w-release",
+      "status": "rejected",
+      "why": "the changelog does not wait on the guide"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "a-0001",
+      "of": "w-harness",
+      "kind": "prove",
+      "state": "done",
+      "started_at": "2026-10-24T08:00:00.000Z",
+      "ended_at": "2026-10-24T08:22:00.000Z",
+      "params": { "agent": "stub", "model": "unknown", "effort": "low" },
+      "result": { "why": "harness landed; fixtures cover pipes and nesting", "notes": ["added parse-tables.spec"] },
+      "sandbox": { "branch": "ostoyae/w-harness" }
+    },
+    {
+      "id": "a-0002",
+      "of": "w-normalize",
+      "kind": "prove",
+      "state": "failed",
+      "started_at": "2026-10-24T09:00:00.000Z",
+      "ended_at": "2026-10-24T09:12:00.000Z",
+      "params": { "agent": "stub", "model": "unknown", "effort": "low" },
+      "result": { "why": "came back with nothing to show", "usage": { "cost_usd": 0.02, "turns": 3 } }
+    },
+    {
+      "id": "a-0003",
+      "of": "w-nested",
+      "kind": "prove",
+      "state": "walled",
+      "started_at": "2026-10-24T10:00:00.000Z",
+      "ended_at": "2026-10-24T10:31:00.000Z",
+      "params": { "agent": "stub", "model": "unknown", "effort": "low" },
+      "result": {
+        "wall": "heading anchors and list anchors both need a slug helper that does not exist yet",
+        "found": ["w-p-slug", "w-perf", "e-0001"],
+        "notes": ["the Rust rewrite is out of scope for this fix"]
+      }
+    },
+    {
+      "id": "a-0004",
+      "of": "w-docs",
+      "kind": "prove",
+      "state": "failed",
+      "started_at": "2026-10-24T11:00:00.000Z",
+      "ended_at": "2026-10-24T11:05:00.000Z",
+      "params": { "agent": "stub", "model": "unknown", "effort": "low" },
+      "result": { "why": "guide file moved under docs/", "usage": { "cost_usd": 0.01, "turns": 2 } }
+    },
+    {
+      "id": "a-0005",
+      "of": "w-docs",
+      "kind": "prove",
+      "state": "failed",
+      "started_at": "2026-10-24T12:00:00.000Z",
+      "ended_at": "2026-10-24T12:07:00.000Z",
+      "params": { "agent": "stub", "model": "unknown", "effort": "low" },
+      "result": { "why": "same miss again; needs the new path written down", "usage": { "cost_usd": 0.01, "turns": 2 } }
+    }
+  ]
+}
