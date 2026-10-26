@@ -415,7 +415,9 @@ if (!commands.length) {
 // credential and spends nothing. The model registry is the CLI's own answer for whether a
 // pinned id exists. Neither can say whether a model is reachable or how much of a
 // subscription allowance is left, so this says what is saved, what the registry lists, and
-// what is not known instead of rating access.
+// what is not known instead of rating access. Remaining allowance is readable only through
+// the account-bound usage endpoint (GET https://opencode.ai/zen/go/v1/usage); doctor does
+// not call it, so allowance stays unread here rather than guessed.
 function opencodeCredentials(provider, args, stdout, cli, pins) {
   ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
   let stored = [];
@@ -438,7 +440,7 @@ function opencodeCredentials(provider, args, stdout, cli, pins) {
     `${stored.length} integration(s) with a saved credential: ${ids.slice(0, 4).join(', ')}${ids.length > 4 ? ', …' : ''}`
     + ' — saved only; noted, not proven to work; no model call made');
   warn('executor auth',
-    'saved credentials are storage only: nothing here has confirmed them working, no command reads the remaining subscription allowance, and one turn does not prove a tool-using cell');
+    'saved credentials are storage only: nothing here has confirmed them working, doctor makes no usage-endpoint call so remaining allowance stays unread, and one turn does not prove a tool-using cell');
   if (absent.length) bad('executor credentials',
     `no stored credential for the pinned provider(s) ${absent.join(', ')}`,
     `run ${provider.cli} auth login for that provider, or pin a provider that is stored; no model call made`);

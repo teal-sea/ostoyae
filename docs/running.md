@@ -42,8 +42,10 @@ or whether a particular model is accessible. For OpenCode it runs `opencode auth
 and reports which integrations have a **saved** credential — storage, not proven access — and
 pre-checks every pinned model id against the CLI's own `opencode models` listing: a pin the
 listing does not contain is blocking, and a bare id the listing shows under more than one
-provider is a warning to pin `provider/model` instead. No command reads a remaining
-subscription allowance; nothing here claims access was verified. Gemini, Aider, Muse and Grok
+provider is a warning to pin `provider/model` instead. Doctor makes no usage-endpoint call:
+remaining allowance is readable only through the account-bound usage endpoint
+(`GET https://opencode.ai/zen/go/v1/usage`), which doctor does not call; nothing here claims
+access was verified. Gemini, Aider, Muse and Grok
 have presence checks only. Any `sandbox.tools[].probe` declared by a board is still executed as
 configured.
 
@@ -62,10 +64,12 @@ variants: they are validated by the client itself at the first attempt. Mixed bo
 role or job separately (`defaults.model`, job `params.model`); every attempt records the model
 it received.
 
-One observed gap, not asserted from a single run: v2.1.4's `run --format json` can finish a
-one-turn session without emitting `step_finish`, so usage totals stay unknown and the attempt
-records the gap instead of a zero. A capped real attempt is what establishes whether
-tool-using cells report usage; four one-turn endpoint probes do not.
+One observed gap, now repaired and proven live: v2.1.4's `run --format json` can finish a
+one-turn session without emitting `step_finish`. The OpenCode adapter recovers usage for such
+runs from the CLI's own session record (`opencode session export <id>`), summed with the same
+per-step rule, and names the source in `cost_basis`; the 2026-10-26 live acceptance exercised
+both a complete-stream cell and a no-`step_finish` one-turn run. A run whose stream and session
+record both lack usable cost stays honestly unknown (`null`), never a zero.
 
 `go` requires at least one positive launch, invocation, dollar or output-token cap. Reserve
 settings alone are not a launch cap. With `--json`, run progress goes to stderr and stdout
