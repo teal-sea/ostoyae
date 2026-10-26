@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one headless OpenCode attempt. stdin is attempt JSON; the harness owns commits.
-# Effort variant from OpenCode docs; OpenCode is not installed on this machine.
-# This adapter has stub contract coverage but has not been verified with a real agent.
+# Verified against the real CLI 2.1.4 on 2026-10-26 (prove and one-turn runs).
+# Effort rides as --model provider/model#variant, which is 2.1.4 help, not a probed run.
 set -uo pipefail
 
 # Run from a private copy, for the reason claude.sh gives.
@@ -44,21 +44,79 @@ fi
 echo "[cell $OSTOYAE_ATTEMPT] $WHAT"
 # The filter turns each JSON event into one plain line for the live view and sums the
 # step_finish parts into usage.json. The exit code is opencode's.
+#
+# OpenCode 2.1.4 does not always get to emit step_finish: its run loop stops consuming
+# session events once execution settles, and the reconciliation it then does from
+# message.list re-emits text and tool_use only, so a run can print the agent's words and no
+# step_finish at all (observed on all four 2026-10-26 endpoint probes). The stream stays the
+# primary source; when it carries no complete usage the adapter asks the CLI for its own
+# record of the session it just ran (`opencode session export <id>`) and reports those
+# numbers, labelled as recovered and as a pricing-table price. When that record is missing,
+# unreadable, for another session, or incomplete, the numbers stay unknown: never zero,
+# never a partial sum passed off as the total, and never a guess.
 opencode "${ARGS[@]}" -- "$WHAT" < /dev/null \
   | MODEL="$MODEL" python3 -u -c '
-import json, math, os, sys, time
+import json, math, os, shutil, subprocess, sys, time
 start = time.time()
 inp = out = cr = cw = 0; cost = 0.0; steps = 0
+sid = None
 def add(total, value):
     if total is None or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         return None
     return total + value
+def ok(value):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
+def session_usage(session):
+    """The usage OpenCode itself recorded for one session, or None if unreadable or a different session."""
+    exe = shutil.which("opencode")
+    if not session or not exe:
+        return None
+    try:
+        p = subprocess.run([exe, "session", "export", session], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    try:
+        doc = json.loads(p.stdout.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    info = doc.get("info")
+    if not isinstance(info, dict) or info.get("id") != session:
+        return None
+    tk = info.get("tokens") if isinstance(info.get("tokens"), dict) else {}
+    cache = tk.get("cache") if isinstance(tk.get("cache"), dict) else {}
+    msgs = doc.get("messages") if isinstance(doc.get("messages"), list) else []
+    steps = [m for m in msgs if isinstance(m, dict) and m.get("type") == "assistant"]
+    sums = [0, 0, 0, 0, 0.0]
+    for m in steps:
+        mt = m.get("tokens") if isinstance(m.get("tokens"), dict) else {}
+        mc = mt.get("cache") if isinstance(mt.get("cache"), dict) else {}
+        row = [mt.get("input"), mt.get("output"), mc.get("read"), mc.get("write"), m.get("cost")]
+        if not all(ok(v) for v in row):
+            sums = None; break
+        sums = [a + b for a, b in zip(sums, row)]
+    # The session info totals also carry the title-generation call OpenCode makes for the
+    # session, which no step_finish ever reported. Summing the recorded steps keeps the same
+    # accounting rule as the stream; the info total is used only when the steps do not say.
+    if sums is not None and steps:
+        return {"input": sums[0], "output": sums[1], "cache_read": sums[2],
+                "cache_write": sums[3], "cost": sums[4], "steps": len(steps), "from": "steps"}
+    if all(ok(v) for v in [tk.get("input"), tk.get("output"), cache.get("read"), cache.get("write"), info.get("cost")]):
+        return {"input": tk["input"], "output": tk["output"], "cache_read": cache["read"],
+                "cache_write": cache["write"], "cost": info["cost"],
+                "steps": len(steps) or None, "from": "session totals"}
+    return None
 for raw in sys.stdin:
     raw = raw.strip()
     if not raw: continue
     try: ev = json.loads(raw)
     except ValueError:
         print(raw, flush=True); continue
+    if sid is None and isinstance(ev.get("sessionID"), str): sid = ev["sessionID"]
     t = ev.get("type"); part = ev.get("part") or {}
     if t == "text":
         s = " ".join(str(part.get("text", "")).split())
@@ -80,27 +138,42 @@ for raw in sys.stdin:
         e = ev.get("error") or {}
         msg = e.get("data", {}).get("message") if isinstance(e, dict) else None
         print("[cell] agent reported an error: " + str(msg or e), flush=True)
+stream_complete = bool(steps) and all(v is not None for v in [inp, out, cr, cw, cost])
+recovered = None
+if not stream_complete:
+    recovered = session_usage(sid)
+complete = stream_complete or recovered is not None
+if recovered is not None:
+    inp, out, cr, cw = recovered["input"], recovered["output"], recovered["cache_read"], recovered["cache_write"]
+    cost = recovered["cost"]
+    steps = steps or recovered["steps"] or 0
+if complete:
+    basis = ("summed from OpenCode step_finish parts; OpenCode pricing" if stream_complete else
+             "summed over the steps OpenCode recorded for this run in its own session record (opencode session export, %s), read because the run stream emitted no complete step_finish; priced from its pricing table, an API-equivalent price, not a bill" % recovered["from"])
+else:
+    basis = "unreported: OpenCode emitted no complete step_finish and its session record could not be read"
 rec = {
     "executor": "opencode", "model": os.environ["MODEL"] or None,
-    "input_tokens": inp if steps else None, "output_tokens": out if steps else None,
-    "cache_read_input_tokens": cr if steps else None, "cache_creation_input_tokens": cw if steps else None,
-    "cost_usd": cost if steps else None,
-    "cost_basis": "summed from OpenCode step_finish parts; OpenCode pricing" if steps and cost is not None else "unreported: incomplete OpenCode step_finish cost",
+    # A partial sum is kept beside _bad so the record shows what was seen, never as a total.
+    "input_tokens": inp if (complete or steps) else None, "output_tokens": out if (complete or steps) else None,
+    "cache_read_input_tokens": cr if (complete or steps) else None, "cache_creation_input_tokens": cw if (complete or steps) else None,
+    "cost_usd": cost if (complete or steps) else None, "cost_basis": basis,
     "duration_ms": int((time.time() - start) * 1000), "api_ms": None,
-    "turns": None, "steps": steps if steps else None,
+    "turns": None, "steps": steps if complete or steps else None,
 }
-if not steps: rec["_bad"] = "OpenCode emitted no step_finish event"
-elif any(v is None for v in [inp, out, cr, cw, cost]):
-    rec["_bad"] = "OpenCode emitted incomplete or invalid usage; missing totals remain unknown"
+if not complete:
+    rec["_bad"] = ("OpenCode emitted no step_finish event and no readable session record" if not steps
+                   else "OpenCode emitted incomplete or invalid usage and no readable session record; missing totals remain unknown")
 try:
     os.makedirs(".ostoyae", exist_ok=True)
     with open(".ostoyae/usage.json", "w") as f: json.dump(rec, f)
 except OSError as e:
     print("[cell] could not write usage: " + str(e), flush=True)
     sys.exit(1)
-print("usage: out=%s in=%s cache_read=%s cost=%s steps=%s" % (
+print("usage: out=%s in=%s cache_read=%s cost=%s steps=%s%s" % (
     rec["output_tokens"], rec["input_tokens"], rec["cache_read_input_tokens"],
-    ("$%.4f" % cost) if steps and cost is not None else "?", rec["steps"]), flush=True)
+    ("$%.4f" % cost) if complete else "?", rec["steps"],
+    " (session record)" if complete and not stream_complete else ""), flush=True)
 '
 PIPE_CODES=("${PIPESTATUS[@]}")
 STATUS=${PIPE_CODES[0]}

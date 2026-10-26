@@ -1,0 +1,83 @@
+{
+  "info": {
+    "id": "ses_e8690bf00ffeiLhCxJFL8yg4Hw",
+    "projectID": "c0dc11d4816a9cc58b36a7e7c8657050ded3cc05",
+    "model": {
+      "id": "deepseek-v4.1-flash",
+      "providerID": "opencode-go",
+      "variant": "default"
+    },
+    "cost": 0.002266008,
+    "tokens": {
+      "input": 15178,
+      "output": 13,
+      "reasoning": 0,
+      "cache": {
+        "read": 1536,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1793038696718,
+      "updated": 1793038701758,
+      "idle": 1793038701764
+    },
+    "title": "Endpoint confirmation",
+    "location": {
+      "directory": "/Users/thomas"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1796f424e001jMYpSXm87zQpte",
+      "time": {
+        "created": 1793038700040
+      },
+      "text": "\"Reply with exactly ENDPOINT_OK. Do not use tools.\"",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_1796f4e44001cBaJKUmDuYJ5WA",
+      "time": {
+        "created": 1793038700126,
+        "streamed": 1793038701753,
+        "completed": 1793038701758
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "deepseek-v4.1-flash",
+        "providerID": "opencode-go",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "ENDPOINT_OK"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0.002217708,
+      "tokens": {
+        "input": 14730,
+        "output": 6,
+        "reasoning": 0,
+        "cache": {
+          "read": 1536,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_1796f54c40012trfSarNadgL4y",
+      "time": {
+        "created": 1793038701764
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    }
+  ]
+}
