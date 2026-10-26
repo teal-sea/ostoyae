@@ -49,11 +49,13 @@ echo "[cell $OSTOYAE_ATTEMPT] $WHAT"
 # session events once execution settles, and the reconciliation it then does from
 # message.list re-emits text and tool_use only, so a run can print the agent's words and no
 # step_finish at all (observed on all four 2026-10-26 endpoint probes). The stream stays the
-# primary source; when it carries no complete usage the adapter asks the CLI for its own
-# record of the session it just ran (`opencode session export <id>`) and reports those
-# numbers, labelled as recovered and as a pricing-table price. When that record is missing,
-# unreadable, for another session, or incomplete, the numbers stay unknown: never zero,
-# never a partial sum passed off as the total, and never a guess.
+# primary source; the adapter also reads the CLI's own record of the session it just ran
+# (`opencode session export <id>`, a local read, no model call). When the stream carries no
+# complete usage, or its step_finish count is fewer than the steps the record holds (events
+# dropped after settle), the record's numbers are used and labelled as recovered; when the
+# record agrees, the stream's numbers stand. When the record is missing, unreadable, for
+# another session, or incomplete, the numbers stay unknown: never zero, never a partial sum
+# passed off as the total, and never a guess.
 opencode "${ARGS[@]}" -- "$WHAT" < /dev/null \
   | MODEL="$MODEL" python3 -u -c '
 import json, math, os, shutil, subprocess, sys, time
@@ -139,17 +141,26 @@ for raw in sys.stdin:
         msg = e.get("data", {}).get("message") if isinstance(e, dict) else None
         print("[cell] agent reported an error: " + str(msg or e), flush=True)
 stream_complete = bool(steps) and all(v is not None for v in [inp, out, cr, cw, cost])
-recovered = None
-if not stream_complete:
-    recovered = session_usage(sid)
+stream_end = time.time()
+record = session_usage(sid)
+# A complete-looking stream is still partial when the CLI record holds MORE assistant
+# steps than the stream emitted step_finish for (the pump drops events that land after
+# settle). Use the record and say so instead of silently under-reporting a capped run.
+dropped = stream_complete and isinstance(record, dict) and isinstance(record.get("steps"), int) and record["steps"] > steps
+if dropped:
+    stream_complete = False
+recovered = record if not stream_complete else None
 complete = stream_complete or recovered is not None
 if recovered is not None:
     inp, out, cr, cw = recovered["input"], recovered["output"], recovered["cache_read"], recovered["cache_write"]
     cost = recovered["cost"]
-    steps = steps or recovered["steps"] or 0
+    steps = recovered["steps"] if dropped else (steps or recovered["steps"] or 0)
 if complete:
-    basis = ("summed from OpenCode step_finish parts; OpenCode pricing" if stream_complete else
-             "summed over the steps OpenCode recorded for this run in its own session record (opencode session export, %s), read because the run stream emitted no complete step_finish; priced from its pricing table, an API-equivalent price, not a bill" % recovered["from"])
+    if dropped:
+        basis = ("summed over the steps OpenCode recorded for this run in its own session record (opencode session export, %s), read because the stream step_finish events covered fewer steps than the record; priced from its pricing table, an API-equivalent price, not a bill" % recovered["from"])
+    else:
+        basis = ("summed from OpenCode step_finish parts; OpenCode pricing" if stream_complete else
+                 "summed over the steps OpenCode recorded for this run in its own session record (opencode session export, %s), read because the run stream emitted no complete step_finish; priced from its pricing table, an API-equivalent price, not a bill" % recovered["from"])
 else:
     basis = "unreported: OpenCode emitted no complete step_finish and its session record could not be read"
 rec = {
@@ -158,7 +169,7 @@ rec = {
     "input_tokens": inp if (complete or steps) else None, "output_tokens": out if (complete or steps) else None,
     "cache_read_input_tokens": cr if (complete or steps) else None, "cache_creation_input_tokens": cw if (complete or steps) else None,
     "cost_usd": cost if (complete or steps) else None, "cost_basis": basis,
-    "duration_ms": int((time.time() - start) * 1000), "api_ms": None,
+    "duration_ms": int((stream_end - start) * 1000), "api_ms": None,
     "turns": None, "steps": steps if complete or steps else None,
 }
 if not complete:

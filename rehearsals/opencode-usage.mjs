@@ -127,14 +127,23 @@ try {
     });
   }
 
-  test('older complete step_finish streams are summed as before, with no extra CLI call', () => {
+  test('a complete step_finish stream is summed as before when the record agrees', () => {
     const dir = cell('stream-complete');
     const stream = join(tmp, 'complete.jsonl');
     writeFileSync(stream, [
-      { type: 'step_finish', part: { cost: 0.25, tokens: { input: 3, output: 2, cache: { read: 1, write: 0 } } } },
-      { type: 'step_finish', part: { cost: 0, tokens: { input: 5, output: 4, cache: { read: 0, write: 2 } } } },
+      { type: 'step_finish', sessionID: 'ses_ok', part: { cost: 0.25, tokens: { input: 3, output: 2, cache: { read: 1, write: 0 } } } },
+      { type: 'step_finish', sessionID: 'ses_ok', part: { cost: 0, tokens: { input: 5, output: 4, cache: { read: 0, write: 2 } } } },
     ].map((e) => JSON.stringify(e)).join('\n') + '\n');
-    const r = adapt(dir, { stream });
+    const record = join(tmp, 'complete.session.json');
+    writeFileSync(record, JSON.stringify({
+      info: { id: 'ses_ok', cost: 0.25, tokens: { input: 8, output: 6, cache: { read: 1, write: 2 } } },
+      messages: [
+        { type: 'user', tokens: { input: 0, output: 0, cache: { read: 0, write: 0 } } },
+        { type: 'assistant', cost: 0.25, tokens: { input: 3, output: 2, cache: { read: 1, write: 0 } } },
+        { type: 'assistant', cost: 0, tokens: { input: 5, output: 4, cache: { read: 0, write: 2 } } },
+      ],
+    }));
+    const r = adapt(dir, { stream, exported: record });
     assert.equal(r.status, 0, r.out);
     assert.equal(r.usage._bad, undefined, JSON.stringify(r.usage));
     assert.equal(r.usage.input_tokens, 8); assert.equal(r.usage.output_tokens, 6);
@@ -142,7 +151,38 @@ try {
     assert(Math.abs(r.usage.cost_usd - 0.25) < 1e-12);
     assert.equal(r.usage.steps, 2);
     assert.match(r.usage.cost_basis, /step_finish/);
-    assert.equal(r.exports.length, 0, 'a complete stream must not spend an extra CLI call');
+    assert.equal(r.exports.length, 1, 'a complete stream consults the record once to check for dropped steps');
+  });
+
+  test('a complete-looking stream whose record shows more steps is recovered, not under-reported', () => {
+    const dir = cell('partial-drop');
+    const stream = join(tmp, 'partial-drop.jsonl');
+    writeFileSync(stream, [
+      { type: 'step_finish', sessionID: 'ses_drop', part: { cost: 0.25, tokens: { input: 3, output: 2, cache: { read: 1, write: 0 } } } },
+      { type: 'step_finish', sessionID: 'ses_drop', part: { cost: 0.001, tokens: { input: 5, output: 4, cache: { read: 0, write: 2 } } } },
+    ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const record = join(tmp, 'partial-drop.session.json');
+    writeFileSync(record, JSON.stringify({
+      info: { id: 'ses_drop', cost: 0.2535, tokens: { input: 1508, output: 6, cache: { read: 1, write: 2 } } },
+      messages: [
+        { type: 'user', tokens: { input: 0, output: 0, cache: { read: 0, write: 0 } } },
+        { type: 'assistant', cost: 0.25, tokens: { input: 3, output: 2, cache: { read: 1, write: 0 } } },
+        { type: 'assistant', cost: 0.001, tokens: { input: 5, output: 4, cache: { read: 0, write: 2 } } },
+        { type: 'assistant', cost: 0.0025, tokens: { input: 1500, output: 0, cache: { read: 0, write: 0 } } },
+      ],
+    }));
+    const r = adapt(dir, { stream, exported: record });
+    assert.equal(r.status, 0, r.out);
+    assert.equal(r.usage._bad, undefined, JSON.stringify(r.usage));
+    assert.equal(r.usage.input_tokens, 1508, JSON.stringify(r.usage));
+    assert.equal(r.usage.output_tokens, 6, JSON.stringify(r.usage));
+    assert.equal(r.usage.cache_read_input_tokens, 1, JSON.stringify(r.usage));
+    assert.equal(r.usage.cache_creation_input_tokens, 2, JSON.stringify(r.usage));
+    assert(Math.abs(r.usage.cost_usd - 0.2535) < 1e-12, `${r.usage.cost_usd} vs 0.2535`);
+    assert.equal(r.usage.steps, 3, JSON.stringify(r.usage));
+    assert.match(r.usage.cost_basis, /session record/i, r.usage.cost_basis);
+    assert.match(r.usage.cost_basis, /fewer steps than the record/i, r.usage.cost_basis);
+    assert.equal(r.exports.length, 1, JSON.stringify(r.calls));
   });
 
   test('a silent run whose session record cannot be read reports unknown, never zero', () => {
