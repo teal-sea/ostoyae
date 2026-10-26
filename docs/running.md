@@ -71,6 +71,10 @@ per-step rule, and names the source in `cost_basis`; the 2026-10-26 live accepta
 both a complete-stream cell and a no-`step_finish` one-turn run. A run whose stream and session
 record both lack usable cost stays honestly unknown (`null`), never a zero.
 
+Adapter status matches that evidence and nothing more: OpenCode is live-verified only on
+checked `opencode-go/deepseek-v4.1-flash` cells (2026-10-26). Other Go models, provider lanes
+and `#variant` efforts remain unverified, and `ostoyae providers` says so.
+
 `go` requires at least one positive launch, invocation, dollar or output-token cap. Reserve
 settings alone are not a launch cap. With `--json`, run progress goes to stderr and stdout
 contains one result object. `stop` returns 10 while work is draining or ownership is unknown;

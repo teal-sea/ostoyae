@@ -147,9 +147,12 @@ An arbitrary chat/completion model does not become a coding agent merely by givi
 | `--agent grok` | Optional `--model` (e.g. `grok-4.6`); grok.com login under HOME | Installed CLI; auth unverified (model access verified by live runs, 2026-09-18) |
 | `--exec 'command'` | A custom attempt/handback executor, including one using a local model | Executable and configuration checks where inspectable; auth unverified |
 
-Gemini, Aider and OpenCode adapters remain experimental. Contract rehearsals use stubs and do
-not prove a particular real model, CLI version or account works. See [executors](executors.md)
-for the exact adapter contract and historical real-agent evidence.
+Gemini and Aider adapters remain experimental. The OpenCode adapter is no longer stub-only: it
+has been exercised live on checked `opencode-go/deepseek-v4.1-flash` cells (2026-10-26), and
+`ostoyae providers` reports exactly that route as tested. No other Go model, provider lane or
+effort variant has been verified. Contract rehearsals use stubs and do not prove a particular
+real model, CLI version or account works. See [executors](executors.md) for the exact adapter
+contract and historical real-agent evidence.
 
 Environment values are not copied into the board. Cells receive `PATH`, `HOME`, `USER`, `SHELL`
 and `TMPDIR`, plus explicitly named variables:

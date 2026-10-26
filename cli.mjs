@@ -293,6 +293,7 @@ function providers(json) {
   const t = terminal(); print(t.heading('Choose your executor', `Provider adapters  ·  v${version}`));
   for (const p of inventory) {
     print(t.row(p.id, `${p.label} · ${p.cli ? p.installed ? 'CLI found' : 'CLI missing' : 'bring your command'}${p.experimental ? ' · experimental' : ''}`));
+    if (p.tested) print(t.text(`Tested live: ${p.tested}. Other models, providers and effort variants are not verified.`));
     if (p.cli) print(t.text(`Requires ${p.cli}. Authentication is checked by ostoyae doctor.`));
   }
   if (!inventory.some(p => p.id === 'custom')) print(t.row('custom', 'Any compatible executor: --exec "your command"'));

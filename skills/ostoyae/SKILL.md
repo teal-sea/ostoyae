@@ -23,7 +23,8 @@ quota at all. Report it in those words if the user asks whether a run will work.
 no board, use `ostoyae init --agent hermes --item "..."` for a new board, or select another
 installed agent the user chose. With OpenCode, pin the model with its provider prefix:
 `ostoyae init --agent opencode --model opencode-go/glm-5.3-flash`. Use `ostoyae providers` to
-see adapter status.
+see adapter status: OpenCode is live-tested only on `opencode-go/deepseek-v4.1-flash` cells
+(2026-10-26), so never claim other Go models, provider lanes or effort variants are verified.
 
 A board can mix agents. Set `defaults.agent`, a job's `params.agent`, `mapping.params.agent`, or `judge.params.agent`, with a model and effort for each. A job agent overrides its role agent; role agents override the board default. `go --agent` overrides every attempt. `doctor` checks every selected provider without a model call. Messaging is on by default; use `go --no-messaging` or board `"messaging": false` to disable it. Running peers can use `ostoyae-msg who|send|read`. Each contract lists the attempts running at launch, and when two running attempts change the same file, Ostoyae sends each one message from `ostoyae` naming the file and the other attempt; those notices land in the board's `messages`.
 

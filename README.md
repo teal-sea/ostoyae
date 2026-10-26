@@ -139,7 +139,7 @@ its report, and exits non-zero to fail or wall. The harness commits. The agent n
 | `executors/muse.sh` | Muse Code | yes, three scratch cells |
 | `executors/gemini.sh` | Gemini CLI | no, stub only |
 | `executors/aider.sh` | Aider | no, stub only |
-| `executors/opencode.sh` | OpenCode | yes, live DeepSeek V4.1 Flash Go cells (2026-10-26) |
+| `executors/opencode.sh` | OpenCode | yes, live DeepSeek V4.1 Flash Go cells (2026-10-26); that route only, other Go models and efforts unverified |
 | `executors/fake.sh` | none | the scripted agent the demo and tests use |
 
 `init --agent` picks one. Model IDs pass through unchanged (`--model`, `--effort`); for OpenCode
