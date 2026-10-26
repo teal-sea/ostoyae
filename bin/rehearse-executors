@@ -81,6 +81,12 @@ EOF
 cat > "$T/bin/opencode" <<EOF
 #!/usr/bin/env bash
 . "$T/bin/stub-common"
+# doctor's safe reads answer statically: a saved-credential list and a model registry row.
+# They log nothing and spend nothing; the run flow below is logged as before.
+case "\$*" in
+  "auth list --format json") printf '[{"id":"stub-account","name":"stub account","connections":[{"type":"credential","id":"cred-1","label":"stub","method":"key"}]}]'; exit 0 ;;
+  "models") printf 'stub-account/model\nopencode-go/glue-model\n'; exit 0 ;;
+esac
 echo "config: \${OPENCODE_CONFIG_CONTENT:-}" >> "\$STUB_LOG"
 echo '{"type":"step_start","timestamp":1,"sessionID":"s","part":{"type":"step-start"}}'
 echo '{"type":"tool_use","timestamp":1,"sessionID":"s","part":{"type":"tool","tool":"write","state":{"status":"completed","input":{"filePath":"w-hello.txt"}}}}'

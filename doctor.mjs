@@ -374,7 +374,7 @@ for (const [configName, agent, command, pins = []] of commands) if (env) {
         // Status output can contain credential fragments. Neither stdout nor stderr is printed.
         if (r.error || r.status !== 0) bad('executor auth', `${provider.label} ${args.join(' ')} failed (${r.error?.code ?? r.status})`,
           `authenticate ${provider.cli} in this environment; check HOME, USER and the provider environment names. No model call made`);
-        else if (provider.id === 'opencode') opencodeCredentials(provider, args, r.stdout, pins);
+        else if (provider.id === 'opencode') opencodeCredentials(provider, args, r.stdout, cli, pins);
         else ok('executor auth', `${provider.label} reports authentication in the cell environment; no model call made`);
       } else if (present) {
         ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
@@ -416,7 +416,8 @@ if (!commands.length) {
 // pinned id exists. Neither can say whether a model is reachable or how much of a
 // subscription allowance is left, so this says what is saved, what the registry lists, and
 // what is not known instead of rating access.
-function opencodeCredentials(provider, args, stdout, pins) {
+function opencodeCredentials(provider, args, stdout, cli, pins) {
+  ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
   let stored = [];
   try {
     const rows = JSON.parse(stdout ?? '[]');
