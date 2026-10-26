@@ -374,7 +374,7 @@ for (const [configName, agent, command, pins = []] of commands) if (env) {
         // Status output can contain credential fragments. Neither stdout nor stderr is printed.
         if (r.error || r.status !== 0) bad('executor auth', `${provider.label} ${args.join(' ')} failed (${r.error?.code ?? r.status})`,
           `authenticate ${provider.cli} in this environment; check HOME, USER and the provider environment names. No model call made`);
-        else if (provider.id === 'opencode') opencodeCredentials(provider, args, r.stdout, cli, pins);
+        else if (provider.id === 'opencode') opencodeCredentials(provider, args, r.stdout, cli, pins, providerEnv);
         else ok('executor auth', `${provider.label} reports authentication in the cell environment; no model call made`);
       } else if (present) {
         ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
@@ -418,7 +418,7 @@ if (!commands.length) {
 // what is not known instead of rating access. Remaining allowance is readable only through
 // the account-bound usage endpoint (GET https://opencode.ai/zen/go/v1/usage); doctor does
 // not call it, so allowance stays unread here rather than guessed.
-function opencodeCredentials(provider, args, stdout, cli, pins) {
+function opencodeCredentials(provider, args, stdout, cli, pins, providerEnv) {
   ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
   let stored = [];
   try {
@@ -426,7 +426,7 @@ function opencodeCredentials(provider, args, stdout, cli, pins) {
     if (Array.isArray(rows)) stored = rows.filter((x) => Array.isArray(x?.connections) && x.connections.length);
   } catch { /* a non-JSON answer is treated as an empty list below */ }
   if (!stored.length) {
-    const byEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENCODE_CONFIG_CONTENT'].filter((n) => process.env[n]);
+    const byEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENCODE_CONFIG_CONTENT'].filter((n) => providerEnv[n]);
     if (byEnv.length) warn('executor credentials',
       `${provider.label} reports no stored credential; relying on explicitly passed ${byEnv.join(', ')}, UNVERIFIED; no model call made`);
     else bad('executor credentials', `${provider.label} reports no stored credential in the cell environment`,
@@ -444,11 +444,11 @@ function opencodeCredentials(provider, args, stdout, cli, pins) {
   if (absent.length) bad('executor credentials',
     `no stored credential for the pinned provider(s) ${absent.join(', ')}`,
     `run ${provider.cli} auth login for that provider, or pin a provider that is stored; no model call made`);
-  opencodeModels(provider, stored.map((x) => x.id), pins);
+  opencodeModels(provider, stored.map((x) => x.id), pins, providerEnv);
 }
 
-function opencodeModels(provider, stored, pins) {
-  const r = spawnSync(provider.cli, ['models'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+function opencodeModels(provider, stored, pins, providerEnv) {
+  const r = spawnSync(provider.cli, ['models'], { env: providerEnv, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
   const listed = String(r.stdout ?? '').split('\n').map((s) => s.trim()).filter((s) => s.includes('/'));
   if (r.error || r.status !== 0) {
     warn('model pin', `could not read ${provider.cli} models (${r.error?.code ?? r.status}); a pinned model cannot be pre-checked here and the first attempt will say`);
