@@ -21,6 +21,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 OST=$PWD
+# bin/ostoyae resolves its own symlinks (cd -P) before it prints a path, so the install path
+# in init's output is the physical one. Compare against $PWD -P, not the logical $PWD: on this
+# host /home/thomas is a symlink to /Users/thomas and both name the same install.
+OST_CANON=$(cd -P "$OST" && pwd)
 T=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/rehearse-land.XXXXXX")" && pwd -P)
 trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
 export OSTOYAE_STATE_DIR="$T/state" OSTOYAE_NO_OPEN=1 NO_COLOR=1
@@ -117,7 +121,7 @@ git init -q -b main "$T/p" && echo x > "$T/p/f" && (cd "$T/p" && G add -A && G c
 (cd "$T/p" && PATH="$T/pathbin:$PATH" "$O" init --exec "$FAKE" --item "x" > "$T/init-path.out" 2>&1)
 (cd "$T/p" && PATH="/usr/bin:/bin:$(dirname "$(command -v node)")" "$O" init --force --exec "$FAKE" --item "x" > "$T/init-nopath.out" 2>&1)
 check "12. init says 'ostoyae doctor' with this install on PATH, the absolute path without it" \
-  "grep -q \"next:  ostoyae doctor 'ostoyae.json'\" '$T/init-path.out' && grep -q \"next:  '$OST/bin/ostoyae' doctor\" '$T/init-nopath.out'"
+  "grep -q \"next:  ostoyae doctor 'ostoyae.json'\" '$T/init-path.out' && grep -q \"next:  '$OST_CANON/bin/ostoyae' doctor\" '$T/init-nopath.out'"
 
 echo
 if [ "$fails" = 0 ]; then echo "  rehearse-land: $ran assertions, all passing"; else echo "  rehearse-land: $fails of $ran FAILED"; fi
