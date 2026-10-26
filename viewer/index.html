@@ -273,6 +273,7 @@
       <button id="fit" title="Fit the graph to the window (f)">fit</button>
       <button id="zoom-out" aria-label="Zoom out">&minus;</button><span id="zoom"></span><button id="zoom-in" aria-label="Zoom in">+</button>
       <button id="clear" title="Clear the selection (Escape)">clear</button>
+      <span id="graphnote" hidden title="Agents never found a prerequisite on this board: every job stands by itself, so there is nothing to link. The list view is the structure."></span>
     </div>
     <div id="tip"></div>
   </div>
@@ -524,6 +525,18 @@ function renderTop(d) {
     `<b>${done}</b> of ${jobs} finished`,
     d.readOnly ? 'view only' : ''].filter(Boolean);
   document.getElementById('state').innerHTML = parts.join('<span class="sep">·</span>');
+  // The honest empty-shape state: an edgeless board cannot show structure and the view would
+  // draw a column of dots as if it could. Say what it means where the person is already
+  // looking; the nodes stay drawn and the list keeps everything.
+  renderGraphNote(d);
+}
+function renderGraphNote(d) {
+  const el = document.getElementById('graphnote');
+  if (!el) return;
+  const linked = d.edges.some(e => e.status !== 'rejected');
+  const jobs = d.nodes.filter(n => !['proposed', 'rejected'].includes(n.state)).length;
+  el.hidden = linked || !jobs;
+  if (!el.hidden) el.textContent = `no dependencies: ${plural(jobs, 'job')} stand alone · the list is the structure`;
 }
 function renderBoards(d) {
   const det = document.getElementById('boards'), menu = document.getElementById('boardmenu');
@@ -1105,8 +1118,10 @@ function relayout() {
     }
     // A column is as tall as its boxes: the top of the first job's node to the bottom of the
     // last job's name, and a big job's name must clear the job under it, so two hubs stacked
-    // in one column sit a little further apart than ROWH.
-    const gap = (a, b) => Math.max(ROWH, boxBot(a) + boxTop(b));
+    // in one column sit a little further apart than ROWH. The +2 is slack, not decoration:
+    // seats that exactly touch the box a job may take leave every round of separation one
+    // float away from a collision, and the audit then reports label pairs touching.
+    const gap = (a, b) => Math.max(ROWH, boxBot(a) + boxTop(b) + 2);
     const colH = list => list.reduce((s, v, i) => s + (i ? gap(list[i - 1], v) : 0), boxTop(list[0]) + boxBot(list[list.length - 1]));
     const h = Math.max(ROWH, ...[...cols.values()].map(colH));
     for (const [c, list] of cols) {
@@ -1127,8 +1142,27 @@ function relayout() {
   // deepest job, so a few jobs and what waits beyond them stay one picture that fit can bring up.
   const spread = maxRank > 0 && (xEnd - x0) / maxRank <= COLW_MAX;
   const past = x0 + maxRank * colw + COLW_MIN / 2;
-  const fx = spread ? Math.max(past, room.w - MARGIN - R_FRONT - 4) : past, fh = Math.max(0, parked.length - 1) * FRONTROW;
-  parked.forEach((v, i) => { v.tx = fx; v.ty = total / 2 - fh / 2 + i * FRONTROW; v.parked = true; v.r = R_FRONT; });
+  const fx = spread ? Math.max(past, room.w - MARGIN - R_FRONT - 4) : past;
+  // One column of the frontier is the right picture only while the room can hold it. A board
+  // where every job stands alone has no rank, so its whole frontier is that column: 428 jobs
+  // at 30px run 12,800px down, fit can only fall to its floor, and half the board ends up off
+  // screen as 2px dots that cannot be clicked. Past the rows the room can show, the frontier
+  // wraps into the next column, reading down and then across like a page; the block stays one
+  // picture fit can frame, and the order the jobs are listed in is unchanged.
+  const fitRows = Math.max(1, Math.floor((room.h - 80) / FRONTROW));
+  let fcols = 1;
+  if (parked.length > fitRows) {
+    const roomCols = Math.max(1, Math.floor((room.w - MARGIN - fx - 8) / FRONTROW));
+    fcols = Math.max(1, Math.min(roomCols, Math.ceil(parked.length / fitRows)));
+  }
+  const frows = Math.max(1, Math.ceil(parked.length / fcols));
+  const fw = (fcols - 1) * FRONTROW, fh = (frows - 1) * FRONTROW;
+  const fleft = Math.min(fx, Math.max(MARGIN, room.w - MARGIN - fw));
+  parked.forEach((v, i) => {
+    v.tx = fleft + Math.floor(i / frows) * FRONTROW;
+    v.ty = total / 2 - fh / 2 + (i % frows) * FRONTROW;
+    v.parked = true; v.r = R_FRONT;
+  });
   drawBandLabels();
 }
 // A family's name sits under its last row and shows only while the pointer rests on the family.

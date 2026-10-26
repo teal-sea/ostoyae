@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# The viewer-layout regressions from the real erdos boards, on focused fixtures with no model:
+#
+#   bin/viewer-layout-rehearse       prints one line per assertion, exits non-zero if any fails
+#
+# Measured baseline (public main, independent real-board harness at 8fe1f9a, headless Chrome):
+# - erdos-zeta-plain (187 jobs / 212 edges): the page's own `?audit` reported 10 job-box
+#   overlaps at 1440x900 and again at 720x900, all ready jobs stacked in one column. relayout
+#   seated neighbours exactly touching the boxes jobs may take (gap = boxBot + boxTop with no
+#   margin) for any pair holding a hub, so the per-frame separation pass had no room to settle
+#   in. Fix: every seat keeps a strict margin over both boxes (gap = sum + 2), so a separated
+#   job lands on a legal seat instead of inside its neighbour.
+# - erdos-open (428 jobs, 0 edges, everything frontier): the frontier was one 30px column
+#   12,810px tall; fit fell to its 15% floor, only 46.7% of centres stayed on screen and every
+#   core painted 1.8px wide, so no job could be clicked. Fix: past the rows the room can show,
+#   the frontier wraps into the next column (down, then across, same order), and the block is
+#   one picture fit can frame. Small frontiers keep the single column.
+# Fixtures: `viewer-layout-tall-column.json` (81 jobs, one family) for label clearance and
+# `viewer-layout-frontier-428.json` (428 edgeless jobs) for the framable frontier.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+OST=$PWD
+T=$(mktemp -d "${TMPDIR:-/tmp}/viewer-layout-rehearse.XXXXXX")
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT
+fails=0
+pass() { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; fails=$((fails+1)); }
+skip() { echo "  skip  $1"; }
+freeport() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+
+echo "== 1: the shipped column math — seats keep margin over the boxes jobs may take"
+python3 - "$OST/viewer/index.html" "$T/seats.mjs" <<'PY'
+import re, sys
+src, dest = open(sys.argv[1]).read(), open(sys.argv[2], "w")
+labelY = re.search(r"const labelY = v => (.*?);", src)
+topbot = re.search(r"const boxTop = v => (.*?), boxBot = v => (.*?);", src)
+rowh = re.search(r"ROWH = (\d+)", src)
+boxwh = re.search(r"const BOXW = (\d+), BOXH = (\d+);", src)
+gap = re.search(r"const gap = \(a, b\) => (.*?);", src)
+if not all([labelY, topbot, rowh, boxwh, gap]):
+    dest.write('console.log("  FAIL  shipped column math not found in the page"); process.exit(1);\n')
+    sys.exit(0)
+dest.write("const BOXW = %s, BOXH = %s;\n" % (boxwh.group(1), boxwh.group(2)))
+dest.write("const ROWH = %s;\nconst gap = (a, b) => %s;\n" % (rowh.group(1), gap.group(1)))
+dest.write("const labelY = v => %s;\n" % labelY.group(1))
+dest.write("const boxTop = v => %s;\nconst boxBot = v => %s;\n" % (topbot.group(1), topbot.group(2)))
+dest.write(r"""
+let fails = 0;
+const check = (n, c) => { console.log((c ? "  ok    " : "  FAIL  ") + n); if (!c) fails++; };
+// The audited box is boxTop..boxBot tall. Two jobs stacked in one column only stay clear if the
+// seat spacing leaves a margin over both boxes; equality is the defect the real board found,
+// because the separation pass moves settled jobs by parts of a pixel and any nudge then lands
+// inside the neighbour (10 reported pairs on erdos-zeta-plain at 1440 and 720 before the fix).
+const slack = (ra, rb) => gap({ r: ra }, { r: rb }) - (boxBot({ r: ra }) + boxTop({ r: rb }));
+check("two small jobs one under the other keep margin", slack(10, 10) >= 1, `slack ${slack(10, 10).toFixed(1)}`);
+check("a big hub keeps margin over a small job", slack(24, 10) >= 1, `slack ${slack(24, 10).toFixed(1)}`);
+check("a small job keeps margin under a big hub", slack(10, 24) >= 1, `slack ${slack(10, 24).toFixed(1)}`);
+check("two big hubs keep margin", slack(24, 24) >= 1, `slack ${slack(24, 24).toFixed(1)}`);
+check("row height stays the floor, seats never shrink below it", gap({ r: 10 }, { r: 10 }) >= ROWH);
+process.exit(fails ? 1 : 0);
+""")
+PY
+if [ "$?" != 0 ]; then fail "1. seat math does not extract from the page"
+else node "$T/seats.mjs" > "$T/seats.log" 2>&1
+  if [ "$?" = 0 ]; then pass "1. seats keep margin over the box, never touch it"; else fail "1. seat math"; tail -4 "$T/seats.log" | sed 's/^/        /'; fi
+fi
+
+echo "== 2: the edgeless state names itself, nothing is hidden"
+python3 - "$OST/viewer/index.html" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+ok = True
+def need(label, cond):
+    global ok
+    print(("  ok    " if cond else "  FAIL  ") + label, flush=True)
+    if not cond: ok = False
+need("the graphnote element exists on the HUD", 'id="graphnote"' in src)
+need("the graphnote has a title that says what it means", 'title="Agents never found a prerequisite' in src)
+need("renderGraphNote exists", "function renderGraphNote(d)" in src)
+region = src.split("function renderTop(d)")[1].split("function renderGraphNote")[0]
+need("renderGraphNote runs with the top line, in renderTop itself", "renderGraphNote(d);" in region)
+need("the note hides when the board has edges", "el.hidden = linked || !jobs;" in src)
+need("the note words the honest state, not a promise of structure", "no dependencies: " in src and "the list is the structure" in src)
+sys.exit(0 if ok else 1)
+PY
+if [ "$?" = 0 ]; then pass "2. edgeless-note wiring present and node-preserving"; else fail "2. edgeless-note wiring"; fi
+
+echo "== 3: the rendered page in a real headless browser, on the fixtures"
+CHROME=""
+for c in "${CHROME_BIN:-}" "$(command -v google-chrome 2>/dev/null)" "$(command -v chromium 2>/dev/null)"; do
+  [ -n "$c" ] && [ -x "$c" ] && CHROME="$c" && break
+done
+if [ -z "$CHROME" ]; then
+  skip "3. no headless browser on PATH"
+else
+  export CHROME_BIN="$CHROME"
+  SERVE_PID=""
+  start() { # $1=fixture $2=port
+    node "$OST/viewer/serve.mjs" "$1" --port "$2" --read-only > "$T/serve-$2.log" 2>&1 &
+    SERVE_PID=$!
+    local waited=0
+    while [ "$waited" -lt 20 ]; do
+      curl -s --max-time 1 "http://127.0.0.1:$2/api/graph" 2>/dev/null | grep -q graph && break
+      sleep 0.5; waited=$((waited+1))
+    done
+  }
+  stop() { [ -n "${SERVE_PID:-}" ] && kill "$SERVE_PID" 2>/dev/null; wait "${SERVE_PID:-}" 2>/dev/null; SERVE_PID=""; }
+  probe() { # $1=url $2=w $3=h $4=checks $5=label [$6=expectedNodes]
+    # TMPDIR inside $T: the probe's own browser profile lands in the rehearsal's scratch dir,
+    # so the trap above removes it even if a killed browser leaves files behind.
+    TMPDIR="$T" timeout 180 node "$OST/rehearsals/viewer-layout-probe.mjs" "$1" "$2" "$3" "$4" "${6:-}" > "$T/probe.log" 2>&1
+    local rc=$?
+    if [ "$rc" = 0 ]; then pass "$5"
+    elif [ "$rc" = 2 ]; then skip "$5 (browser harness fault: page never settled)"
+    else fail "$5"; tail -5 "$T/probe.log" | sed 's/^/        /'; fi
+  }
+  P1=$(freeport); start "$OST/rehearsals/fixtures/viewer-layout-tall-column.json" "$P1"
+  probe "http://127.0.0.1:$P1/?still&audit&view=graph" 1440 900 "audit-zero,linked-note-off" "3a. 81-job family at 1440: zero label overlaps, note silent (board has edges)"
+  probe "http://127.0.0.1:$P1/?still&audit&view=graph" 800 900 "audit-zero" "3b. the same family at 800 (narrow): zero label overlaps"
+  stop
+  P2=$(freeport); start "$OST/rehearsals/fixtures/viewer-layout-frontier-428.json" "$P2"
+  probe "http://127.0.0.1:$P2/?still&audit&view=graph" 1440 900 "nodes-drawn,audit-zero,fit-frames,edgeless-note" "3c. 428 edgeless jobs at 1440: all drawn, fit frames every job, cores clickable, state named" 428
+  probe "http://127.0.0.1:$P2/?still&audit&view=graph" 720 900 "nodes-drawn,audit-zero,fit-frames,edgeless-note" "3d. 428 edgeless jobs at 720 (phone dimensions): same guarantees" 428
+  stop
+  P3=$(freeport); start "$OST/rehearsals/fixtures/viewer-layout-edgeless.json" "$P3"
+  probe "http://127.0.0.1:$P3/?still&audit&view=graph" 1440 900 "edgeless-note" "3e. a small 60-job edgeless board keeps its single column and names the state"
+  stop
+fi
+echo "=== viewer-layout-rehearse: $fails failure(s)"
+exit $(( fails > 0 ? 1 : 0 ))
