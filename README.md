@@ -139,13 +139,17 @@ its report, and exits non-zero to fail or wall. The harness commits. The agent n
 | `executors/muse.sh` | Muse Code | yes, three scratch cells |
 | `executors/gemini.sh` | Gemini CLI | no, stub only |
 | `executors/aider.sh` | Aider | no, stub only |
-| `executors/opencode.sh` | OpenCode | no, stub only |
+| `executors/opencode.sh` | OpenCode | yes, live DeepSeek V4.1 Flash Go cells (2026-10-26); that route only, other Go models and efforts unverified |
 | `executors/fake.sh` | none | the scripted agent the demo and tests use |
 
-`init --agent` picks one. Model IDs pass through unchanged (`--model`, `--effort`). To mix agents
+`init --agent` picks one. Model IDs pass through unchanged (`--model`, `--effort`); for OpenCode
+pin the provider too, e.g. `--model opencode-go/glm-5.3-flash`, since the same model id can
+exist under several providers on one account. To mix agents
 on one board, set `defaults.agent`, a job's `params.agent`, `mapping.params.agent` or
 `judge.params.agent`. `ostoyae doctor` checks that the agent is installed and logged in
-without sending a prompt.
+without sending a prompt; for OpenCode it says which credentials are *saved* (the client's own
+`opencode auth list`), pre-checks pinned model ids against `opencode models`, and never claims
+access or remaining subscription quota.
 
 Running agents can talk: each is told who else is running, and `ostoyae-msg who`, `send` and
 `read` work across agent types. When two attempts change the same file, Ostoyae messages both.

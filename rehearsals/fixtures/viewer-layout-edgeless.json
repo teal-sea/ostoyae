@@ -1,0 +1,315 @@
+{
+ "graph": "viewer-layout-edgeless",
+ "concurrency": 3,
+ "max_attempts": 3,
+ "sandbox": {
+  "repo": "/tmp/viewer-layout-edgeless",
+  "root": "/tmp/viewer-layout-edgeless",
+  "base": "main",
+  "port_base": "auto"
+ },
+ "work": [
+  {
+   "id": "w-el-001",
+   "label": "Stand-alone 1",
+   "what": "Stand-alone job 1, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-002",
+   "label": "Stand-alone 2",
+   "what": "Stand-alone job 2, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-003",
+   "label": "Stand-alone 3",
+   "what": "Stand-alone job 3, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-004",
+   "label": "Stand-alone 4",
+   "what": "Stand-alone job 4, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-005",
+   "label": "Stand-alone 5",
+   "what": "Stand-alone job 5, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-006",
+   "label": "Stand-alone 6",
+   "what": "Stand-alone job 6, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-007",
+   "label": "Stand-alone 7",
+   "what": "Stand-alone job 7, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-008",
+   "label": "Stand-alone 8",
+   "what": "Stand-alone job 8, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-009",
+   "label": "Stand-alone 9",
+   "what": "Stand-alone job 9, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-010",
+   "label": "Stand-alone 10",
+   "what": "Stand-alone job 10, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-011",
+   "label": "Stand-alone 11",
+   "what": "Stand-alone job 11, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-012",
+   "label": "Stand-alone 12",
+   "what": "Stand-alone job 12, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-013",
+   "label": "Stand-alone 13",
+   "what": "Stand-alone job 13, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-014",
+   "label": "Stand-alone 14",
+   "what": "Stand-alone job 14, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-015",
+   "label": "Stand-alone 15",
+   "what": "Stand-alone job 15, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-016",
+   "label": "Stand-alone 16",
+   "what": "Stand-alone job 16, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-017",
+   "label": "Stand-alone 17",
+   "what": "Stand-alone job 17, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-018",
+   "label": "Stand-alone 18",
+   "what": "Stand-alone job 18, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-019",
+   "label": "Stand-alone 19",
+   "what": "Stand-alone job 19, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-020",
+   "label": "Stand-alone 20",
+   "what": "Stand-alone job 20, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-021",
+   "label": "Stand-alone 21",
+   "what": "Stand-alone job 21, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-022",
+   "label": "Stand-alone 22",
+   "what": "Stand-alone job 22, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-023",
+   "label": "Stand-alone 23",
+   "what": "Stand-alone job 23, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-024",
+   "label": "Stand-alone 24",
+   "what": "Stand-alone job 24, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-025",
+   "label": "Stand-alone 25",
+   "what": "Stand-alone job 25, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-026",
+   "label": "Stand-alone 26",
+   "what": "Stand-alone job 26, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-027",
+   "label": "Stand-alone 27",
+   "what": "Stand-alone job 27, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-028",
+   "label": "Stand-alone 28",
+   "what": "Stand-alone job 28, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-029",
+   "label": "Stand-alone 29",
+   "what": "Stand-alone job 29, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-030",
+   "label": "Stand-alone 30",
+   "what": "Stand-alone job 30, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-031",
+   "label": "Stand-alone 31",
+   "what": "Stand-alone job 31, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-032",
+   "label": "Stand-alone 32",
+   "what": "Stand-alone job 32, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-033",
+   "label": "Stand-alone 33",
+   "what": "Stand-alone job 33, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-034",
+   "label": "Stand-alone 34",
+   "what": "Stand-alone job 34, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-035",
+   "label": "Stand-alone 35",
+   "what": "Stand-alone job 35, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-036",
+   "label": "Stand-alone 36",
+   "what": "Stand-alone job 36, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-037",
+   "label": "Stand-alone 37",
+   "what": "Stand-alone job 37, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-038",
+   "label": "Stand-alone 38",
+   "what": "Stand-alone job 38, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-039",
+   "label": "Stand-alone 39",
+   "what": "Stand-alone job 39, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-040",
+   "label": "Stand-alone 40",
+   "what": "Stand-alone job 40, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-041",
+   "label": "Stand-alone 41",
+   "what": "Stand-alone job 41, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-042",
+   "label": "Stand-alone 42",
+   "what": "Stand-alone job 42, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-043",
+   "label": "Stand-alone 43",
+   "what": "Stand-alone job 43, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-044",
+   "label": "Stand-alone 44",
+   "what": "Stand-alone job 44, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-045",
+   "label": "Stand-alone 45",
+   "what": "Stand-alone job 45, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-046",
+   "label": "Stand-alone 46",
+   "what": "Stand-alone job 46, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-047",
+   "label": "Stand-alone 47",
+   "what": "Stand-alone job 47, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-048",
+   "label": "Stand-alone 48",
+   "what": "Stand-alone job 48, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-049",
+   "label": "Stand-alone 49",
+   "what": "Stand-alone job 49, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-050",
+   "label": "Stand-alone 50",
+   "what": "Stand-alone job 50, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-051",
+   "label": "Stand-alone 51",
+   "what": "Stand-alone job 51, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-052",
+   "label": "Stand-alone 52",
+   "what": "Stand-alone job 52, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-053",
+   "label": "Stand-alone 53",
+   "what": "Stand-alone job 53, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-054",
+   "label": "Stand-alone 54",
+   "what": "Stand-alone job 54, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-055",
+   "label": "Stand-alone 55",
+   "what": "Stand-alone job 55, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-056",
+   "label": "Stand-alone 56",
+   "what": "Stand-alone job 56, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-057",
+   "label": "Stand-alone 57",
+   "what": "Stand-alone job 57, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-058",
+   "label": "Stand-alone 58",
+   "what": "Stand-alone job 58, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-059",
+   "label": "Stand-alone 59",
+   "what": "Stand-alone job 59, found whole; an agent never named what must come first."
+  },
+  {
+   "id": "w-el-060",
+   "label": "Stand-alone 60",
+   "what": "Stand-alone job 60, found whole; an agent never named what must come first."
+  }
+ ],
+ "edges": [],
+ "attempts": []
+}

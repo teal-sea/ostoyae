@@ -178,8 +178,13 @@ g["sandbox"]["root"] = f"{T}/wt-{name}"
 # `ok pursuit` and every attempt then dies in provisioning. The protocol's pre-flight runs
 # `rev-parse --verify <base>^{commit}`, which is the form that answers.
 g["sandbox"]["base"] = "main"
+# The shipped examples name one checks directory either as the historical absolute path or as the
+# neutral `/path/to/...` placeholder. Retarget both: a check left pointing outside the throwaway
+# pursuit exits 127 in every cell, which reads as 15 failing agents instead of a stale rehearsal.
 for w in g["work"]:
-    w["check"] = w["check"].replace("/home/tom/swebench/phase1/checks", f"{T}/checks")
+    for old in ("/home/tom/swebench/phase1/checks", "/path/to/swebench/phase1/checks"):
+        w["check"] = w["check"].replace(old, f"{T}/checks")
+    assert w["check"].startswith(f"bash {T}/checks/"), (w["id"], w["check"])
 exec(edit)
 json.dump(g, open(dst, "w"), indent=2)
 PY

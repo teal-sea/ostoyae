@@ -38,8 +38,42 @@ been tested by launching real agents is a launch path nobody tests.
 
 `doctor` checks Claude Code with `claude auth status` and Codex with `codex login status`,
 using the cell's environment. It sends no model prompt and does not establish remaining quota
-or whether a particular model is accessible. Gemini, Aider, OpenCode, Muse and Grok have presence
-checks only. Any `sandbox.tools[].probe` declared by a board is still executed as configured.
+or whether a particular model is accessible. For OpenCode it runs `opencode auth list --format json`
+and reports which integrations have a **saved** credential — storage, not proven access — and
+pre-checks every pinned model id against the CLI's own `opencode models` listing: a pin the
+listing does not contain is blocking, and a bare id the listing shows under more than one
+provider is a warning to pin `provider/model` instead. Doctor makes no usage-endpoint call:
+remaining allowance is readable only through the account-bound usage endpoint
+(`GET https://opencode.ai/zen/go/v1/usage`), which doctor does not call; nothing here claims
+access was verified. Gemini, Aider, Muse and Grok
+have presence checks only. Any `sandbox.tools[].probe` declared by a board is still executed as
+configured.
+
+### OpenCode Go, mixed models and the combined client
+
+`--agent opencode` runs the installed `opencode` command, whatever launcher provides it. One
+combined-client launcher owns its profile paths outright: it re-exports its own
+`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/state/cache values before starting, so the cell needs
+nothing but `PATH` to reach stored credentials and the model registry. `--env` names are for
+everything else; saving `XDG_*` into `sandbox.env_passthrough` is pointless for it.
+
+Model pins are exact. `opencode-go/glm-5.3-flash` names the subscription provider lane; a bare
+id also listed by other providers on the account warns rather than picking one. `--effort`
+reaches the client as a `#variant` suffix on the pinned model, and doctor cannot pre-check
+variants: they are validated by the client itself at the first attempt. Mixed boards pin each
+role or job separately (`defaults.model`, job `params.model`); every attempt records the model
+it received.
+
+One observed gap, now repaired and proven live: v2.1.4's `run --format json` can finish a
+one-turn session without emitting `step_finish`. The OpenCode adapter recovers usage for such
+runs from the CLI's own session record (`opencode session export <id>`), summed with the same
+per-step rule, and names the source in `cost_basis`; the 2026-10-26 live acceptance exercised
+both a complete-stream cell and a no-`step_finish` one-turn run. A run whose stream and session
+record both lack usable cost stays honestly unknown (`null`), never a zero.
+
+Adapter status matches that evidence and nothing more: OpenCode is live-verified only on
+checked `opencode-go/deepseek-v4.1-flash` cells (2026-10-26). Other Go models, provider lanes
+and `#variant` efforts remain unverified, and `ostoyae providers` says so.
 
 `go` requires at least one positive launch, invocation, dollar or output-token cap. Reserve
 settings alone are not a launch cap. With `--json`, run progress goes to stderr and stdout

@@ -323,9 +323,10 @@ if (g && (EXEC || selectsAgents(g))) {
   } catch (e) { bad('attempt config', e.message, 'pair each model with its selected agent'); }
 }
 const commands = [...new Map(configs.map(([name, config]) => [config.agent,
-  [name, config.agent, EXEC ?? executorCommand(config.agent, root, g.execution?.command)]] )).values()];
-if (!commands.length && EXEC) commands.push(['executor', identifyExecutor(EXEC).provider, EXEC]);
-for (const [configName, agent, command] of commands) if (env) {
+  [name, config.agent, EXEC ?? executorCommand(config.agent, root, g.execution?.command),
+    configs.filter(([, c]) => c.agent === config.agent && c.model).map(([, c]) => c.model)]])).values()];
+if (!commands.length && EXEC) commands.push(['executor', identifyExecutor(EXEC).provider, EXEC, []]);
+for (const [configName, agent, command, pins = []] of commands) if (env) {
   let providerEnv = cellEnvironment(g?.sandbox?.env_passthrough ?? [], process.env, agent);
   const identified = identifyExecutor(command);
   const initialEnv = { ...providerEnv };
@@ -367,11 +368,13 @@ for (const [configName, agent, command] of commands) if (env) {
       for (const name of provider.env)
         if (process.env[name] && !providerEnv[name]) warn('cell environment', `${name} is set on this host but absent from the cell; add its NAME to sandbox.env_passthrough if required`);
       if (present && provider.auth) {
-        const args = provider.id === 'claude' ? ['auth', 'status'] : ['login', 'status'];
+        const args = Array.isArray(provider.auth_args) ? provider.auth_args
+          : provider.id === 'claude' ? ['auth', 'status'] : ['login', 'status'];
         const r = spawnSync(cli, args, { env: providerEnv, encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] });
         // Status output can contain credential fragments. Neither stdout nor stderr is printed.
         if (r.error || r.status !== 0) bad('executor auth', `${provider.label} ${args.join(' ')} failed (${r.error?.code ?? r.status})`,
           `authenticate ${provider.cli} in this environment; check HOME, USER and the provider environment names. No model call made`);
+        else if (provider.id === 'opencode') opencodeCredentials(provider, args, r.stdout, cli, pins, providerEnv);
         else ok('executor auth', `${provider.label} reports authentication in the cell environment; no model call made`);
       } else if (present) {
         ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
@@ -407,6 +410,78 @@ if (!commands.length) {
 }
 
 /* report */
+
+// OpenCode's credential list is storage, not access: it names integrations with a saved
+// credential and spends nothing. The model registry is the CLI's own answer for whether a
+// pinned id exists. Neither can say whether a model is reachable or how much of a
+// subscription allowance is left, so this says what is saved, what the registry lists, and
+// what is not known instead of rating access. Remaining allowance is readable only through
+// the account-bound usage endpoint (GET https://opencode.ai/zen/go/v1/usage); doctor does
+// not call it, so allowance stays unread here rather than guessed.
+function opencodeCredentials(provider, args, stdout, cli, pins, providerEnv) {
+  ok('executor', `${provider.cli} is on PATH in the cell environment (${cli})`);
+  let stored = [];
+  try {
+    const rows = JSON.parse(stdout ?? '[]');
+    if (Array.isArray(rows)) stored = rows.filter((x) => Array.isArray(x?.connections) && x.connections.length);
+  } catch { /* a non-JSON answer is treated as an empty list below */ }
+  if (!stored.length) {
+    const byEnv = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENCODE_CONFIG_CONTENT'].filter((n) => providerEnv[n]);
+    if (byEnv.length) warn('executor credentials',
+      `${provider.label} reports no stored credential; relying on explicitly passed ${byEnv.join(', ')}, UNVERIFIED; no model call made`);
+    else bad('executor credentials', `${provider.label} reports no stored credential in the cell environment`,
+      `run ${provider.cli} auth login for OpenCode Go on this host; no model call made`);
+    return;
+  }
+  const ids = stored.map((x) => x.id);
+  const wanted = new Set(pins.filter((m) => m.includes('/')).map((m) => m.split('/')[0]));
+  const absent = [...wanted].filter((id) => !ids.includes(id));
+  ok('executor credentials',
+    `${stored.length} integration(s) with a saved credential: ${ids.slice(0, 4).join(', ')}${ids.length > 4 ? ', …' : ''}`
+    + ' — saved only; noted, not proven to work; no model call made');
+  warn('executor auth',
+    'saved credentials are storage only: nothing here has confirmed them working, doctor makes no usage-endpoint call so remaining allowance stays unread, and one turn does not prove a tool-using cell');
+  if (absent.length) bad('executor credentials',
+    `no stored credential for the pinned provider(s) ${absent.join(', ')}`,
+    `run ${provider.cli} auth login for that provider, or pin a provider that is stored; no model call made`);
+  opencodeModels(provider, stored.map((x) => x.id), pins, providerEnv);
+}
+
+function opencodeModels(provider, stored, pins, providerEnv) {
+  const r = spawnSync(provider.cli, ['models'], { env: providerEnv, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+  const listed = String(r.stdout ?? '').split('\n').map((s) => s.trim()).filter((s) => s.includes('/'));
+  if (r.error || r.status !== 0) {
+    warn('model pin', `could not read ${provider.cli} models (${r.error?.code ?? r.status}); a pinned model cannot be pre-checked here and the first attempt will say`);
+    return;
+  }
+  if (!pins.length) {
+    warn('model pin',
+      'no model pinned: the first attempt uses the account default model. Pin an exact one, e.g. --model opencode-go/glm-5.3-flash (variants append #effort and are not registry-checked)');
+    return;
+  }
+  const owners = (id) => id.includes('/')
+    ? (listed.includes(id) ? [id] : [])
+    : [...new Set(listed.filter((x) => x.endsWith(`/${id}`)))];
+  for (const pin of [...new Set(pins)]) {
+    // OpenCode accepts `provider/model#effort`, but `opencode models` lists the model
+    // without the variant, so only the base id can be registry-checked. The variant is
+    // the client's business: it is validated there, not against this listing.
+    const hash = pin.indexOf('#');
+    const both = hash > 0;
+    const base = both ? pin.slice(0, hash) : pin;
+    const variant = both ? pin.slice(hash + 1) : '';
+    const suffix = variant ? `; #${variant} is client-validated, not registry-checked` : '';
+    const where = owners(base);
+    if (where.length === 1 && where[0] === base) ok('model pin',
+      `${pin}${both ? `: base ${base}` : ''} is in the CLI's model listing (registry-checked existence only, not access)${suffix}`);
+    else if (where.length === 1) ok('model pin',
+      `bare ${pin} resolves to ${where[0]}${variant ? `#${variant}` : ''}; pin that exactly. ${stored.includes(where[0].split('/')[0]) ? '' : 'no stored credential names that provider lane'}`);
+    else if (where.length > 1) warn('model pin',
+      `bare ${pin} matches ${where.slice(0, 4).join(', ')}${where.length > 4 ? ', …' : ''}; different providers are different billing lanes, so pin provider/${pin} to choose`);
+    else bad('model pin', `${pin}${both ? ` (base ${base})` : ''} is not in the CLI's model listing; the client would refuse it on the first attempt`,
+      `pick one from ${provider.cli} models`);
+  }
+}
 
 const pad = (s, n) => String(s).padEnd(n);
 const failed = rows.filter((r) => r.state === 'FAIL').length;

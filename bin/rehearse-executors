@@ -80,6 +80,13 @@ echo "Tokens: 12k sent, 200 received. Cost: \\\$0.02 message, \\\$0.03 session."
 EOF
 cat > "$T/bin/opencode" <<EOF
 #!/usr/bin/env bash
+# doctor's safe reads and the adapter's session-record read answer statically and log
+# nothing; the run flow below (stub-common) is logged as before.
+case "\$*" in
+  "auth list --format json") printf '[{"id":"stub-account","name":"stub account","connections":[{"type":"credential","id":"cred-1","label":"stub","method":"key"}]}]'; exit 0 ;;
+  "models") printf 'stub-account/model\nopencode-go/glue-model\n'; exit 0 ;;
+  "session export "*) printf '{"info":{"id":"s","cost":0.0025,"tokens":{"input":1000,"output":50,"reasoning":0,"cache":{"read":600,"write":0}}},"messages":[{"type":"user","tokens":{}},{"type":"assistant","cost":0.0025,"tokens":{"input":1000,"output":50,"reasoning":0,"cache":{"read":600,"write":0}}}]}'; exit 0 ;;
+esac
 . "$T/bin/stub-common"
 echo "config: \${OPENCODE_CONFIG_CONTENT:-}" >> "\$STUB_LOG"
 echo '{"type":"step_start","timestamp":1,"sessionID":"s","part":{"type":"step-start"}}'

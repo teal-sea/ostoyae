@@ -1,0 +1,94 @@
+{
+  "info": {
+    "id": "ses_e8690bf54ffeFl4H8Y9hVw5eH8",
+    "projectID": "c0dc11d4816a9cc58b36a7e7c8657050ded3cc05",
+    "model": {
+      "id": "glm-5.3-flash",
+      "providerID": "opencode-go",
+      "variant": "default"
+    },
+    "cost": 0.00191156,
+    "tokens": {
+      "input": 11936,
+      "output": 12,
+      "reasoning": 14,
+      "cache": {
+        "read": 4352,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1793038696635,
+      "updated": 1793038701864,
+      "idle": 1793038701875
+    },
+    "title": "Endpoint response check",
+    "location": {
+      "directory": "/Users/thomas"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1796f427e001ZovmA3mIbLVN7q",
+      "time": {
+        "created": 1793038699622
+      },
+      "text": "\"Reply with exactly ENDPOINT_OK. Do not use tools.\"",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_1796f4c9a001toIvksO3clsMCi",
+      "time": {
+        "created": 1793038699751,
+        "streamed": 1793038701857,
+        "completed": 1793038701864
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "glm-5.3-flash",
+        "providerID": "opencode-go",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "The user wants a plain reply of a fixed string, no tools.",
+          "native": {
+            "reasoningField": "reasoning_content"
+          },
+          "time": {
+            "created": 1793038701603,
+            "completed": 1793038701847
+          }
+        },
+        {
+          "type": "text",
+          "text": "ENDPOINT_OK"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0.00186326,
+      "tokens": {
+        "input": 11488,
+        "output": 5,
+        "reasoning": 14,
+        "cache": {
+          "read": 4352,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_1796f5533001qdw9LCKcZHk2WB",
+      "time": {
+        "created": 1793038701875
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    }
+  ]
+}

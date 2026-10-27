@@ -142,14 +142,17 @@ An arbitrary chat/completion model does not become a coding agent merely by givi
 | `--agent codex` | Explicit `--model`; Codex adapter deliberately ignores user configuration to preserve its isolation settings | `codex login status`, no model prompt |
 | `--agent gemini` | Optional `--model`; explicitly pass needed Google/Gemini environment names | Installed CLI; auth and model access unverified |
 | `--agent aider` | `--model` understood by Aider, including its configured backend | Installed CLI; auth and model access unverified |
-| `--agent opencode` | `--model provider/model`; declared OpenCode configuration is preserved with the git denial enforced | Installed CLI; auth and model access unverified |
+| `--agent opencode` | `--model provider/model`; declared OpenCode configuration is preserved with the git denial enforced | `opencode auth list` reports *saved* credentials, not proven access; pinned models checked against `opencode models`; no remaining-quota read |
 | `--agent muse` | Optional `--model` (e.g. `muse-spark-1.3`); explicitly pass `META_API_KEY` when that is how the box authenticates | Installed CLI; auth unverified (model access verified by live runs, 2026-09-17) |
 | `--agent grok` | Optional `--model` (e.g. `grok-4.6`); grok.com login under HOME | Installed CLI; auth unverified (model access verified by live runs, 2026-09-18) |
 | `--exec 'command'` | A custom attempt/handback executor, including one using a local model | Executable and configuration checks where inspectable; auth unverified |
 
-Gemini, Aider and OpenCode adapters remain experimental. Contract rehearsals use stubs and do
-not prove a particular real model, CLI version or account works. See [executors](executors.md)
-for the exact adapter contract and historical real-agent evidence.
+Gemini and Aider adapters remain experimental. The OpenCode adapter is no longer stub-only: it
+has been exercised live on checked `opencode-go/deepseek-v4.1-flash` cells (2026-10-26), and
+`ostoyae providers` reports exactly that route as tested. No other Go model, provider lane or
+effort variant has been verified. Contract rehearsals use stubs and do not prove a particular
+real model, CLI version or account works. See [executors](executors.md) for the exact adapter
+contract and historical real-agent evidence.
 
 Environment values are not copied into the board. Cells receive `PATH`, `HOME`, `USER`, `SHELL`
 and `TMPDIR`, plus explicitly named variables:
@@ -162,7 +165,12 @@ ostoyae init --agent aider --model YOUR_MODEL --env OPENAI_API_KEY --item "Your 
 execution environment. Custom `--exec` commands are saved verbatim, so keep credential values
 out of those commands and use `--env` for them. Pass any required backend, project, region and
 credential variables explicitly. `doctor` warns about relevant host variables missing from the cell without printing
-their values. Configuration files in HOME remain available to provider CLIs. Codex's adapter
+their values. Configuration files in HOME remain available to provider CLIs. The combined `opencode`
+launcher is an exception the other way: it re-exports its own `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, state and cache values before starting, so stored credentials, session data
+and the model registry resolve inside its profile paths no matter what the cell passes; the
+cell only needs the launcher's PATH entry. Its `auth list` is a storage read and its `models`
+a registry read; neither spends a model call, and neither reports remaining allowance. Codex's adapter
 has a narrower configuration contract; arbitrary custom backends belong in a compatible adapter
 or custom executor, not an assumed Codex config override.
 

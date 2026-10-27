@@ -1,0 +1,94 @@
+{
+  "info": {
+    "id": "ses_e8690bf2affe8d5XlfGUWkgRFl",
+    "projectID": "c0dc11d4816a9cc58b36a7e7c8657050ded3cc05",
+    "model": {
+      "id": "qwen3.8-flash",
+      "providerID": "opencode-go",
+      "variant": "default"
+    },
+    "cost": 0.00336096,
+    "tokens": {
+      "input": 454,
+      "output": 26,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 16514
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1793038696675,
+      "updated": 1793038701965,
+      "idle": 1793038701969
+    },
+    "title": "Exact response constraint",
+    "location": {
+      "directory": "/Users/thomas"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1796f42b1001xsPVf1xlDJqxPn",
+      "time": {
+        "created": 1793038699840
+      },
+      "text": "\"Reply with exactly ENDPOINT_OK. Do not use tools.\"",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_1796f4d64001b5BwD1Ua31wFE3",
+      "time": {
+        "created": 1793038699905,
+        "streamed": 1793038701961,
+        "completed": 1793038701965
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "qwen3.8-flash",
+        "providerID": "opencode-go",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "The user is asking for a specific response without using tools.\n",
+          "native": {
+            "signature": ""
+          },
+          "time": {
+            "created": 1793038701568,
+            "completed": 1793038701857
+          }
+        },
+        {
+          "type": "text",
+          "text": "ENDPOINT_OK"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "end_turn",
+      "cost": 0.00331216,
+      "tokens": {
+        "input": 6,
+        "output": 18,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 16514
+        }
+      }
+    },
+    {
+      "id": "msg_1796f5591001hNY5xeovn7iIUs",
+      "time": {
+        "created": 1793038701969
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    }
+  ]
+}
