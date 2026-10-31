@@ -105,6 +105,24 @@ assert "3. attempt detail and graph read the recorded agent, model and effort" "
 src=open('$OST/viewer/index.html').read();api=open('$OST/viewer/serve.mjs').read()
 assert 'agent: a.params?.agent' in api and 'model: a.params?.model' in api and 'effort: a.params?.effort' in api
 assert '[a.agent, a.model, a.effort]' in src and 'badge.textContent = active?.agent' in src"
+assert "3. fit keeps a soft floor for small boards; room is the SVG canvas" "
+src=open('$OST/viewer/index.html').read()
+assert 'FIT_MIN' in src and 'sim.work.size <= 12' in src
+assert \"getElementById('svg')\" in src and 'view === \\'graph\\'' in src"
+assert "3. heading pushes update the seat (tx/ty), not only the drawn position" "
+src=open('$OST/viewer/index.html').read()
+assert 'v.tx += push.dx' in src and 'v.ty += push.dy' in src"
+assert "3. family bands are title strips; frontier gets a not-mapped-yet band" "
+src=open('$OST/viewer/index.html').read()
+assert \"text: 'not mapped yet'\" in src and 'BAND_BELOW' in src and 'h: 0' in src"
+assert "3. snapshot carries rejectedWhy, revises and verdict for superseded/judged-no" "
+api=open('$OST/viewer/serve.mjs').read();src=open('$OST/viewer/index.html').read()
+assert 'rejectedWhy: w.rejected_why' in api and 'revises: w.revises' in api and 'verdict: w.verdict' in api
+assert 'isSuperseded' in src and 'judged-no' in src and 'superseded' in src"
+assert "3. header says N jobs finished of M, without a second read-only tag" "
+src=open('$OST/viewer/index.html').read()
+assert 'finished of \${jobs}' in src and 'plural(done,' in src
+assert \"d.readOnly ? 'view only'\" not in src"
 
 echo "== 4: the rendered page, in a real headless browser"
 # The shipped page, served by the shipped server, read back from a real browser engine
