@@ -23,6 +23,7 @@ import { canonicalPath } from './lib/process-identity.mjs';
 import { validateEffort, effectiveEffort } from './lib/effort.mjs';
 import { linkEntries, preflightEntries } from './lib/sandbox-link.mjs';
 import { runPreflight } from './sandbox.mjs';
+import { doctorCapabilities } from './lib/capabilities.mjs';
 
 const argv = process.argv.slice(2);
 let file = null, EXEC = null, model = null, effort = null, argumentError = null, json = false;
@@ -318,6 +319,9 @@ if (repo && g?.sandbox) {
     } catch (e) { bad('preflight', e.message, 'sandbox.preflight entries are { cmd, what? }'); }
   }
 }
+
+/* named per-node runtime capabilities (schema only; cell-profile probes run at launch) */
+if (g) doctorCapabilities(g, { ok, warn, bad });
 
 /* the executor, in the real cell environment */
 

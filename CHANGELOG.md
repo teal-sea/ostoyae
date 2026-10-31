@@ -12,6 +12,12 @@
 - `sandbox.link` may mark entries `required` with an optional `probe`, and `sandbox.preflight`
   declares preparation checks shared by doctor and cell provisioning. Failed probes block
   before any model launch (#2).
+- Per-node runtime capabilities: `sandbox.capabilities` + `work[].requires`, probed under the
+  same sandbox profile as the model shell (Codex via `codex sandbox`, no tokens) before launch.
+  Parent-owned `sandbox.capability_evidence` can park a node without spending model budget when
+  the known runtime cannot start.
+- Board viewer: fit floor and SVG-canvas room sizing, title-strip family bands, and
+  superseded / judged-no labels via snapshot `rejectedWhy` / `verdict` (#1).
 
 ## 0.2.2, first public release
 

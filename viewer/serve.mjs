@@ -191,6 +191,11 @@ function snapshot(opts = {}) {
     mapSpent: S.mapSpent(w.id),
     mapMax: S.mapMax(),
     foundBy: w.found_by ?? null,
+    // Why a rejection stands (superseded by a revision, cycle, operator no) and any verify
+    // verdict. The page dims superseded / judged-no suggestions so they do not read as live.
+    rejectedWhy: w.rejected_why ?? null,
+    revises: w.revises ?? null,
+    verdict: w.verdict ?? null,
     attempts: S.attemptsOf(w.id).map((a) => ({
       id: a.id, state: a.state, kind: kindOf(a), from: a.from ?? null,
       agent: a.params?.agent ?? null, model: a.params?.model ?? null, effort: a.params?.effort ?? a.params?.reasoning_effort ?? null,

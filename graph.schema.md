@@ -599,6 +599,52 @@ absent means the Claude executor's default. The Codex executor requires an expli
 `params.model` and rejects `max_turns`: its CLI has no equivalent agent-turn cap. It does not
 silently substitute an output-token budget or inherit a Claude model name.
 
+### `sandbox.capabilities` and `work[].requires`, runtime preflight before model launch
+
+A node that needs a disposable runtime the cell sandbox may not be able to start (for example
+PostgreSQL `initdb` under Codex seatbelt/landlock) must name that requirement, not discover it
+mid-attempt after spending tokens. Capabilities are **profile-bound** and distinct from doctor
+tool presence checks and from board-level prep scripts.
+
+```json
+"sandbox": {
+  "capabilities": {
+    "postgres.initdb": {
+      "what": "start a disposable Postgres via initdb under the cell sandbox",
+      "probe": "initdb -D \"$TMPDIR/ostoyae-cap-pg-$$\" >/dev/null && echo ok",
+      "timeout_ms": 20000
+    }
+  },
+  "capability_evidence": [
+    {
+      "capability": "postgres.initdb",
+      "ok": false,
+      "where": "cell",
+      "profile": "codex/workspace-write",
+      "by": "a-0001",
+      "of": "w-foundation",
+      "at": "2026-10-22T00:46:00.000Z",
+      "why": "shmget(size=56): Operation not permitted"
+    }
+  ]
+},
+"work": [
+  { "id": "w-http-verify", "what": "…", "requires": ["postgres.initdb"], "needs": ["w-foundation"] }
+]
+```
+
+Before spawning a model on an item with `requires`, the runner looks up evidence for each id under
+the upcoming agent profile (`codex/workspace-write` for Codex; `host/<agent>` otherwise). Matching
+`ok: false` evidence with `where: "cell"` parks the item with zero attempts. Missing evidence runs
+the catalog `probe` under that profile (`codex sandbox <platform> --full-auto` for Codex — no model
+tokens). A failed or unverifiable Codex probe parks the same way. Host/`external` success does
+**not** satisfy a cell requirement; record parent-owned isolated results in
+`sandbox.capability_evidence` (or on `attempt.result.capabilities`) instead of widening sandbox
+permissions or pointing the cell at an existing database.
+
+Doctor validates that every `requires` id exists in `sandbox.capabilities`. It does not claim the
+Codex cell can start the runtime — that is the launch-time probe.
+
 ### `sandbox.link`, dependency caches, shared rather than rebuilt
 
 ```json

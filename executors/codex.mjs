@@ -5,6 +5,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+// Zero-token capability probe under the same OS sandbox class the cell uses (`codex sandbox`).
+export { codexSandboxArgs as cellProbeArgs } from '../lib/capabilities.mjs';
 
 const self = fileURLToPath(import.meta.url);
 const object = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
