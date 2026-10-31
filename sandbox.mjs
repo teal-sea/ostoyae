@@ -9,9 +9,10 @@
 // port or migration ordinal, because an attempt cannot see its siblings and the runner can.
 // Two workers each reading a log, seeing #8 and taking #9 is a real thing that happened.
 
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, lstatSync, unlinkSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, lstatSync, unlinkSync, realpathSync, cpSync, readdirSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { linkEntries, linkPaths, preflightEntries } from './lib/sandbox-link.mjs';
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();
@@ -20,6 +21,31 @@ const git = (args) => sh('git', args, { env: {
   GIT_AUTHOR_NAME: 'ostoyae', GIT_AUTHOR_EMAIL: 'ostoyae@invalid',
   GIT_COMMITTER_NAME: 'ostoyae', GIT_COMMITTER_EMAIL: 'ostoyae@invalid',
 } });
+
+/**
+ * Run declared preparation probes in a directory that already has linked caches.
+ * Shared by doctor (pursuit root) and the cell (after provision). Does not install
+ * anything, does not bypass hooks, and never prints credential-bearing env values.
+ */
+export function runPreflight(cwd, cfg, log = () => {}) {
+  const results = [];
+  for (const entry of linkEntries(cfg?.link)) {
+    if (!entry.probe) continue;
+    const r = spawnSync('sh', ['-c', entry.probe], { cwd, encoding: 'utf8', timeout: entry.probe_timeout_ms, stdio: 'pipe' });
+    const detail = String(r.stdout || r.stderr || '').trim().split('\n')[0];
+    const ok = !r.error && r.status === 0;
+    results.push({ kind: 'link', path: entry.path, probe: entry.probe, ok, detail, status: r.status, error: r.error?.code ?? null });
+    if (!ok) log(`preflight link ${entry.path}: ${r.error?.code ?? `exit ${r.status}`}${detail ? `: ${detail}` : ''}`);
+  }
+  for (const entry of preflightEntries(cfg?.preflight)) {
+    const r = spawnSync('sh', ['-c', entry.cmd], { cwd, encoding: 'utf8', timeout: entry.timeout_ms, stdio: 'pipe' });
+    const detail = String(r.stdout || r.stderr || '').trim().split('\n')[0];
+    const ok = !r.error && r.status === 0;
+    results.push({ kind: 'preflight', cmd: entry.cmd, what: entry.what, ok, detail, status: r.status, error: r.error?.code ?? null });
+    if (!ok) log(`preflight ${entry.cmd}: ${r.error?.code ?? `exit ${r.status}`}${detail ? `: ${detail}` : ''}`);
+  }
+  return results;
+}
 
 /* ------------------------------------------------------------ the room */
 
@@ -140,7 +166,7 @@ export function provision(attempt, cfg, log = () => {}, upstream = []) {
   // than gitignored, because .gitignore belongs to the project and this does not.
   const text = (cfg.contract === 'plain' ? plainContract(attempt, env, tools) : contract(attempt, env, tools)) +
     (cfg.messaging ? messagingNotice(cfg.messaging.peers ?? [], cfg.agent) : '') +
-    linkNotice(cfg.link, made.links.length) +
+    linkNotice(linkPaths(cfg.link), made.links.length) +
     checkNotice(env.OSTOYAE_CHECK) +
     conflictNotice(made.conflicts) +
     (cfg.notes ? `\n## From the operator\n\n${cfg.notes}\n` : '');
@@ -155,7 +181,7 @@ export function provision(attempt, cfg, log = () => {}, upstream = []) {
   // Linked caches go in the exclude too. The project normally gitignores them itself, but a
   // linked path that shows up as untracked invites an agent to `git add` it, and adding a
   // symlink to 1.8 GB of build output to a commit is not a thing anyone wants to review.
-  writeFileSync(excludePath, ['AGENTS.md', 'CLAUDE.md', ...(cfg.link ?? [])].join('\n') + '\n');
+  writeFileSync(excludePath, ['AGENTS.md', 'CLAUDE.md', ...linkPaths(cfg.link)].join('\n') + '\n');
 
   return { path, env, made };
 }
@@ -417,9 +443,14 @@ do not invent structure to look productive: a fabricated edge costs more than a 
 // collects where each link resolves to, for the cell to hand its executor.
 function linkInto(path, cfg, repo, log, targets = null) {
   const links = [];
-  for (const rel of cfg.link ?? []) {
+  for (const entry of linkEntries(cfg.link)) {
+    const rel = entry.path;
     const target = join(repo, rel);
-    if (!existsSync(target)) { log(`link ${rel} skipped, not present in ${repo}`); continue; }
+    if (!existsSync(target)) {
+      if (entry.required) throw new Error(`required link ${rel} is not present in ${repo}`);
+      log(`link ${rel} skipped, not present in ${repo}`);
+      continue;
+    }
     const at = join(path, rel);
     mkdirSync(join(at, '..'), { recursive: true });
     rmSync(at, { recursive: true, force: true });
@@ -458,7 +489,59 @@ export function checkTree(cfg, graph, attempt, log = () => {}) {
 
 /* ------------------------------------------------------------- teardown */
 
-export function teardown(made, cfg, log = () => {}) {
+/** Uncommitted paths in a cell (tracked changes and untracked files), excluding injected contracts. */
+export function dirtyPaths(worktree) {
+  if (!worktree || !existsSync(worktree)) return [];
+  try {
+    const out = git(['-C', worktree, 'status', '--porcelain', '-uall', '--', '.']);
+    return out.split('\n').map((line) => line.trimEnd()).filter(Boolean)
+      .map((line) => line.slice(3).replace(/^"(.*)"$/, '$1').split(' -> ').pop())
+      .filter((p) => p && !['AGENTS.md', 'CLAUDE.md'].includes(p) && !p.startsWith('.ostoyae/') && p !== '.ostoyae');
+  } catch { return ['?']; }
+}
+
+/**
+ * Copy uncommitted cell output (and the handback) to a durable recovery tree before force-remove.
+ * Returns the recovery directory, or null when there was nothing to keep.
+ */
+export function preserveCell(made, cfg, attempt, log = () => {}) {
+  if (!made?.worktree || !existsSync(made.worktree)) return null;
+  const dirty = dirtyPaths(made.worktree);
+  const report = join(made.worktree, '.ostoyae', 'report.json');
+  const usage = join(made.worktree, '.ostoyae', 'usage.json');
+  const keepReport = existsSync(report);
+  const keepUsage = existsSync(usage);
+  if (!dirty.length && !keepReport && !keepUsage) return null;
+  const root = resolve(cfg.root ?? join(resolve(cfg.repo), '..', 'ostoyae-worktrees'));
+  const dest = join(root, '_recovery', attempt.id);
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  for (const rel of dirty) {
+    if (rel === '?') continue;
+    const from = join(made.worktree, rel);
+    if (!existsSync(from)) continue;
+    const to = join(dest, rel);
+    mkdirSync(dirname(to), { recursive: true });
+    cpSync(from, to, { recursive: true });
+  }
+  if (keepReport || keepUsage) {
+    mkdirSync(join(dest, '.ostoyae'), { recursive: true });
+    if (keepReport) cpSync(report, join(dest, '.ostoyae', 'report.json'));
+    if (keepUsage) cpSync(usage, join(dest, '.ostoyae', 'usage.json'));
+  }
+  writeFileSync(join(dest, '.ostoyae-recovery.json'), JSON.stringify({
+    attempt: attempt.id, work: attempt.of, preserved_at: new Date().toISOString(),
+    worktree: made.worktree, branch: made.branch ?? attempt.sandbox?.branch ?? null,
+    paths: dirty.filter((p) => p !== '?'),
+  }, null, 2) + '\n');
+  // Refuse to claim success if the destination is empty of the files we meant to keep.
+  const kept = readdirSync(dest);
+  if (!kept.length) throw new Error(`recovery at ${dest} is empty after copy`);
+  log(`preserved uncommitted cell output at ${dest}`);
+  return dest;
+}
+
+export function teardown(made, cfg, log = () => {}, { recovery = null, allowDirty = false } = {}) {
   // Unlink the shared caches FIRST, before anything is allowed to delete this directory. The
   // links point at the pursuit repo's real `.lake` and `node_modules`; a teardown that removed
   // the tree while they were still in it would be one buggy `rm -r` away from deleting the
@@ -475,8 +558,12 @@ export function teardown(made, cfg, log = () => {}) {
   }
 
   // Environments are disposable. Records are not. The branch survives so a failed attempt's
-  // work can still be read; the worktree and the database do not.
+  // committed work can still be read; uncommitted work must be preserved before force-remove.
   if (made.worktree && existsSync(made.worktree)) {
+    const dirty = dirtyPaths(made.worktree);
+    if (dirty.length && !allowDirty && !recovery) {
+      throw new Error(`refusing to discard uncommitted cell output (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''}); preserve first`);
+    }
     try {
       git(['-C', resolve(cfg.repo), 'worktree', 'remove', '--force', made.worktree]);
       log(`removed worktree ${made.worktree}`);
@@ -522,7 +609,7 @@ export function ensureTrunk(cfg, graph, log = () => {}) {
     log(`trunk worktree ${path}`);
   }
   // Link caches in the trunk worktree too, so merges do not trigger dependency rebuilds.
-  for (const rel of cfg.link ?? []) {
+  for (const rel of linkPaths(cfg.link)) {
     const at = join(path, rel);
     try { if (existsSync(at) && !lstatSync(at).isSymbolicLink()) log(`trunk ${rel} was a real directory, replaced by the link`); } catch {}
   }

@@ -14,6 +14,7 @@ rm -f "$OSTOYAE_EXEC_COPY"
 
 ATTEMPT=$(cat)
 WHAT=$(printf '%s' "$ATTEMPT" | python3 -c 'import json,sys; a=json.load(sys.stdin); print(a.get("what") or a["of"])')
+SUBJECT=$(printf '%s' "$ATTEMPT" | python3 -c 'import json,sys,re;a=json.load(sys.stdin);s=re.sub(r"\s+"," ",(a.get("label")or a.get("of")or"").strip());print((s[:71]+"…")if len(s)>72 else s or a["of"])')
 MODEL=$(printf '%s' "$ATTEMPT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("params",{}).get("model","") or "")')
 EFFORT=$(printf '%s' "$ATTEMPT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("params",{}).get("effort","") or "")')
 KIND=$(printf '%s' "$ATTEMPT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("kind") or "prove")')
@@ -125,10 +126,10 @@ if out:
     rm -f "$PATHS"
     git restore --staged --quiet -- AGENTS.md 2>/dev/null || true
     git restore --staged --quiet -- CLAUDE.md 2>/dev/null || true
-    git commit -qm "$1$WHAT
+    git commit -qm "$1$SUBJECT
 
 Attempt: $OSTOYAE_ATTEMPT
-Work: $OSTOYAE_WORK" || return 1
+Work: $OSTOYAE_WORK" || { echo "[cell $OSTOYAE_ATTEMPT] harness commit failed"; return 1; }
     echo "[cell $OSTOYAE_ATTEMPT] committed $(git rev-parse --short HEAD)"
     return 0
   fi

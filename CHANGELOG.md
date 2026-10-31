@@ -2,10 +2,22 @@
 
 ## Unreleased
 
+- Harness Git commit subjects use the work label or id, not the full task prompt (#7).
+- `doctor` no longer fails the board on inert `proposed` Codex nodes missing `params.model` (#4).
+- Cross-board viewer: a live runner is not reported dead when ownership is ambiguous; prefer
+  unknown, and canonicalize switch URLs (#5).
+- When a cell commit hook rejects, the runner records that failure (not a later missing-file
+  check), preserves uncommitted output under the worktree root's `_recovery/`, and refuses to
+  discard dirty cells without that preserve (#3).
+- `sandbox.link` may mark entries `required` with an optional `probe`, and `sandbox.preflight`
+  declares preparation checks shared by doctor and cell provisioning. Failed probes block
+  before any model launch (#2).
 - Per-node runtime capabilities: `sandbox.capabilities` + `work[].requires`, probed under the
   same sandbox profile as the model shell (Codex via `codex sandbox`, no tokens) before launch.
   Parent-owned `sandbox.capability_evidence` can park a node without spending model budget when
   the known runtime cannot start.
+- Board viewer: fit floor and SVG-canvas room sizing, title-strip family bands, and
+  superseded / judged-no labels via snapshot `rejectedWhy` / `verdict` (#1).
 
 ## 0.2.2, first public release
 

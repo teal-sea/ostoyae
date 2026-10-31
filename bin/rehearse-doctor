@@ -128,6 +128,92 @@ assert 'is a bare interpreter, declared' in t, t
 assert 'grants the cell every command it can run' in t, t
 assert 'ready to launch' in t, t"
 
+echo "== required links and preflight probes (issue #2)"
+python3 - "$T" <<'PY'
+import json, os, sys
+T = sys.argv[1]
+# Missing required cache must block doctor before any model launch.
+json.dump({"graph": "need-nm", "concurrency": 1, "max_attempts": 1,
+           "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-need-nm", "base": "main", "port_base": 5001,
+                       "link": [{"path": "node_modules", "required": True,
+                                 "probe": "test -x node_modules/.bin/tsc"}]},
+           "work": [{"id": "w", "what": "x", "check": "true"}], "edges": [], "attempts": []},
+          open(f"{T}/need-nm.json", "w"), indent=2)
+# Prepared linked cache + passing probe.
+os.makedirs(f"{T}/pursuit/node_modules/.bin", exist_ok=True)
+open(f"{T}/pursuit/node_modules/.bin/tsc", "w").write("#!/bin/sh\nexit 0\n")
+os.chmod(f"{T}/pursuit/node_modules/.bin/tsc", 0o755)
+json.dump({"graph": "have-nm", "concurrency": 1, "max_attempts": 1,
+           "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-have-nm", "base": "main", "port_base": 5002,
+                       "link": [{"path": "node_modules", "required": True,
+                                 "probe": "test -x node_modules/.bin/tsc"}],
+                       "preflight": [{"cmd": "test -x node_modules/.bin/tsc",
+                                      "what": "commit hooks can find tsc"}]},
+           "work": [{"id": "w", "what": "x", "check": "true"}], "edges": [], "attempts": []},
+          open(f"{T}/have-nm.json", "w"), indent=2)
+# Present link but failing probe (hook compiler missing).
+json.dump({"graph": "bad-probe", "concurrency": 1, "max_attempts": 1,
+           "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-bad-probe", "base": "main", "port_base": 5003,
+                       "preflight": [{"cmd": "test -x node_modules/.bin/missing-compiler",
+                                      "what": "commit hook compiler"}]},
+           "work": [{"id": "w", "what": "x", "check": "true"}], "edges": [], "attempts": []},
+          open(f"{T}/bad-probe.json", "w"), indent=2)
+PY
+# need-nm: remove node_modules for the missing-required case (created above for have-nm).
+# Run need-nm against a pursuit without node_modules.
+rm -rf "$T/pursuit-empty" && git init -q -b main "$T/pursuit-empty" && (
+  cd "$T/pursuit-empty" && echo hello > README && git add -A && git -c user.name=r -c user.email=r@x commit -qm start)
+python3 - "$T" <<'PY'
+import json, sys
+T = sys.argv[1]
+json.dump({"graph": "need-nm", "concurrency": 1, "max_attempts": 1,
+           "sandbox": {"repo": f"{T}/pursuit-empty", "root": f"{T}/wt-need-nm", "base": "main", "port_base": 5001,
+                       "link": [{"path": "node_modules", "required": True}]},
+           "work": [{"id": "w", "what": "x", "check": "true"}], "edges": [], "attempts": []},
+          open(f"{T}/need-nm.json", "w"), indent=2)
+PY
+node doctor.mjs "$T/need-nm.json" > "$T/need-nm.log" 2>&1
+assert "8. a required missing link blocks doctor (not ready to launch)" "
+t=open('$T/need-nm.log').read()
+assert 'Not safe to launch' in t, t
+assert 'required node_modules' in t, t"
+
+node doctor.mjs "$T/have-nm.json" > "$T/have-nm.log" 2>&1
+assert "9. a prepared required link with a passing probe is ready to launch" "
+t=open('$T/have-nm.log').read()
+assert 'ready to launch' in t, t
+assert not [l for l in t.splitlines() if l.strip().startswith('FAIL')], t"
+
+node doctor.mjs "$T/bad-probe.json" > "$T/bad-probe.log" 2>&1
+assert "10. a failing preflight probe blocks before any model launch" "
+t=open('$T/bad-probe.log').read()
+assert 'Not safe to launch' in t, t
+assert 'preflight' in t and 'missing-compiler' in t, t"
+
+# Runner path: preflight fails in the cell with zero model invocations (fake never starts).
+python3 - "$T" "$OST" <<'PY'
+import json, sys
+T, OST = sys.argv[1:3]
+json.dump({"graph": "run-preflight", "concurrency": 1, "max_attempts": 1,
+           "sandbox": {"repo": f"{T}/pursuit", "root": f"{T}/wt-run-pf", "base": "main", "port_base": 5004,
+                       "preflight": [{"cmd": "test -x /no/such/commit-hook-compiler", "what": "hook compiler"}]},
+           "work": [{"id": "w", "what": "must not spend a model", "check": "true"}], "edges": [], "attempts": []},
+          open(f"{T}/run-preflight.json", "w"), indent=2)
+PY
+node run.mjs "$T/run-preflight.json" --exec "bash $OST/executors/fake.sh" > "$T/run-preflight.log" 2>&1
+assert "11. a failing cell preflight records failure without a model session" "
+import json
+g=json.load(open('$T/run-preflight.json'))
+assert len(g['attempts'])==1, g['attempts']
+a=g['attempts'][0]
+assert a['state']=='failed', a
+assert 'preflight failed' in a['result']['why'], a['result']
+assert a['result'].get('preflight',{}).get('ok') is False, a['result']
+# Fake executor never wrote usage: zero model spend.
+assert a['result'].get('usage') in (None, {}), a['result']
+t=open('$T/run-preflight.log').read()
+assert 'fake:' not in t.lower() or 'preflight' in t, t"
+
 echo ""
 if [ "$fails" -ne 0 ]; then
   echo "  $fails failing."
