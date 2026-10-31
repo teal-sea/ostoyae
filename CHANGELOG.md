@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Per-node runtime capabilities: `sandbox.capabilities` + `work[].requires`, probed under the
+  same sandbox profile as the model shell (Codex via `codex sandbox`, no tokens) before launch.
+  Parent-owned `sandbox.capability_evidence` can park a node without spending model budget when
+  the known runtime cannot start.
+
 ## 0.2.2, first public release
 
 - One board can mix agents: agent, model and reasoning effort per board, per role (map, verify,
